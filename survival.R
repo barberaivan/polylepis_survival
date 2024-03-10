@@ -23,13 +23,13 @@ mean_ci <- function(x) {
 
 # Import data -------------------------------------------------------------
 
-dpar <- read_excel("Plots_remedicion 2024.03.06.xls",
+dpar <- read_excel(file.path("..", "Plots_remedicion 2024.03.06.xls"),
                    sheet = "parcelas_usar")
 dpar <- dpar[-nrow(dpar), ] # remaining row
-dtree <- read_excel("Plots_remedicion 2024.03.06.xls",
+dtree <- read_excel(file.path("..", "Plots_remedicion 2024.03.06.xls"),
                     sheet = "tab")
 
-dtree_neat <- read_excel("Plots_remedicion 2024.03.06.xls",
+dtree_neat <- read_excel(file.path("..", "Plots_remedicion 2024.03.06.xls"),
                          sheet = "tab_usar")
 
 
