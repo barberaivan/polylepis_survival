@@ -7,10 +7,7 @@ library(posterior)
 library(rstan)
 library(DHARMa)
 library(tidybayes)
-library(terra)         # check spatial correlation
-library(logitnorm)
-library(foreach)       # parallelization of moments_logit_normal
-library(doMC)
+library(terra) # to check spatial correlation
 theme_set(theme_bw())
 
 # Functions ---------------------------------------------------------------
@@ -24,50 +21,6 @@ tree_age <- function(perim, rock) {
 mean_ci <- function(x) {
   qq <- quantile(x, probs = c(0.025, 0.975), method = 8) %>% unname
   return(c("mean" = mean(x), "lower" = qq[1], "upper" = qq[2]))
-}
-
-# vectorized logit_norm mean
-logit_norm_vect <- function(mu, sigma) {
-  if(length(sigma) == 1) sigma <- rep(sigma, length(mu))
-  pmean <- numeric(length(mu))
-
-  for(i in 1:length(mu)) {
-    pmean[i] <- momentsLogitnorm(mu[i], sigma[i])["mean"]
-  }
-  return(pmean)
-}
-
-# compute the mean of the logit-normal distribution in parallel.
-# Intended to be used with a matrix of logit-means and matrix of logit-sd,
-# of the same size. the sds can also be a vector with length == ncol(mu).
-# This is thought for columns to be posterior samples.
-logit_norm_mean <- function(mu, sigma, cores = 15) {
-
-  registerDoMC(cores = cores)
-
-  sigma_mat <- !is.null(dim(sigma))
-
-  # turn columns into list elements
-  if(sigma_mat) {
-    arg_list <- lapply(1:ncol(mu), function(j) {
-      r <- cbind(mu[, j], sigma[, j])
-      colnames(r) <- c("mu", "sigma")
-      return(r)
-    })
-  } else {
-    arg_list <- lapply(1:ncol(mu), function(j) {
-      r <- cbind(mu[, j], sigma[j])
-      colnames(r) <- c("mu", "sigma")
-      return(r)
-    })
-  }
-
-  # compute moments in parallel
-  means_list <- foreach(cc = arg_list) %dopar% {
-    logit_norm_vect(cc[, "mu"], cc[, "sigma"])
-  }
-
-  return(do.call("cbind", means_list))
 }
 
 # Import data -------------------------------------------------------------
@@ -84,19 +37,6 @@ dtree <- read_excel(file.path("..", data_name), sheet = "taball_use")
 dplot <- dplot[is.na(dplot$`delete?`), ] # with no comment in "delete?"
 dtree <- dtree[dtree$plot %in% dplot$plot, ]
 
-length(unique(dtree$plot))
-ddd <- aggregate(hei2003 ~ plot, dtree, length)
-ddd$na_count <- numeric(nrow(ddd))
-for(i in 1:nrow(ddd)) {
-  ddd$na_count[i] <- sum(is.na(as.numeric(dtree$sur2018[dtree$plot == ddd$plot[i]])))
-}
-
-which(ddd$na_count >= ddd$hei2003)
-ddd$plot[101] # tiene todos NA, pero se sabe que tenía 2 muertos y 2 vivos
-
-# waypoints for spatial correlation check
-vplot <- vect(file.path("..", "plots_waypoints.shp"))
-# plot(vplot)
 
 # Tidy data ---------------------------------------------------------------
 
@@ -115,7 +55,7 @@ dplot$basin <- factor(dplot$basin)
 dplot$fire <- factor(as.character(dplot$fire), levels = c("0", "1"),
                      labels = c("Unburned plots", "Burned plots"))
 dplot$manag <- factor(dplot$manag, levels = c("a", "b"),
-                      labels = c("Rangeland", "Livestock exclusion"))
+                      labels = c("rangeland", "livestock exclusion"))
 
 # add age
 dtree$perim <- as.numeric(dtree$perim)
@@ -151,7 +91,7 @@ nrow(dtree) # 1229 available cases
 # Identify complete and incomplete plots -----------------------------------
 
 dn <- data.frame(plot = dtree$plot, surv = dtree$surv)
-dtagg <- aggregate(surv ~ plot, dn, mean, drop = F) # do not remove plot 417!!
+dtagg <- aggregate(surv ~ plot, dn, mean)
 names(dtagg)[2] <- "meansurv"
 
 dtagg$na <- numeric(nrow(dtagg))
@@ -161,11 +101,12 @@ for(i in 1:nrow(dtagg)) {
   dtagg$length[i] <- length(dtree$surv[dtree$plot == dtagg$plot[i]])
 }
 
-# all(dtagg$length >= dtagg$na) # OK
+# all(dtagg$length > dtagg$na) # OK
 dtagg <- left_join(dtagg, dplot[, c("plot", "ntrees", "nalive", "ndead")], by = "plot")
+dtagg <- dtagg[complete.cases(dtagg), ]
 
 dtagg[dtagg$ntrees < dtagg$length, ]
-dtagg[dtagg$ntrees < dtagg$length, ] %>% nrow - 1 # 46 plots with unidentified trees
+dtagg[dtagg$ntrees < dtagg$length, ] %>% nrow - 1 # 46 plots
 
 dtagg$miss <- dtagg$length - dtagg$ntrees
 sum(dtagg$miss) # 349 missing trees.
@@ -179,7 +120,7 @@ plot(miss ~ na, dtagg); abline(0, 1) # ok, always na >= miss
 dtagg$identified <- dtagg$length - dtagg$na
 dtagg$unidentified <- dtagg$ntrees - dtagg$identified
 
-# subset plot with unidentified trees
+# see those plots
 filter <- dtagg$unidentified > 0
 (dsub <- dtagg[filter, ])
 
@@ -201,27 +142,27 @@ for(i in 1:nrow(dsub)) {
 plot(ndead_unid ~ nalive_unid, dsub); abline(0, 1) # most unid are dead
 # in cases where only dead or only alive trees are unidentified,
 # the problem is much smaller.
-sum(dsub$unidentified) # 39 trees
+sum(dsub$unidentified) # 35 trees
 sum(dsub$unidentified) / sum(dtagg$ntrees) * 100
-# 4.43 % of non-missing trees are unidentified
+# 4 % of non-missing trees are unidentified
 
 # list with ones and zeroes for unidentified trees
 bin_list <- lapply(1:nrow(dsub), function(r) {
   c(rep(0, dsub$ndead_unid[r]), rep(1, dsub$nalive_unid[r]))
 })
 
-trees_available_list <- lapply(1:nrow(dsub), function(r) {
+rows_list <- lapply(1:nrow(dsub), function(r) {
   dtree_local <- dtree[dtree$plot == dsub$plot[r], ]
   x <- dtree_local$tree_id[is.na(dtree_local$surv)]
   return(x)
   # return(unique(x))
 })
 
-# make non-redundant combinations of tree ids for each plot
-trees_available_combs <- lapply(1:nrow(dsub), function(i) {
+# make non-redundant combinations
+combs <- lapply(1:nrow(dsub), function(i) {
   # i = 7
   y <- bin_list[[i]]
-  arbol <- trees_available_list[[i]]
+  arbol <- rows_list[[i]]
 
   if(length(y) == 1) {
     combs <- matrix(arbol, nrow = 1)
@@ -249,7 +190,7 @@ trees_available_combs <- lapply(1:nrow(dsub), function(i) {
   return(combs)
 })
 
-dsub$combinations_unique <- sapply(trees_available_combs, ncol)
+dsub$combinations_unique <- sapply(combs, ncol)
 # In these plots we will compute the marginal likelihood with respect to all
 # possible id combinations.
 
@@ -265,7 +206,7 @@ dsub$combinations_unique <- sapply(trees_available_combs, ncol)
 # for plots where unidentified == 0, we jus remove surv == NA.
 # For plots with unidentified > 0, we separate the NA and the obverved.
 dtagg %>% dim()
-sum(dtagg$unidentified > 0) # 13 plots == nrow(dsub)
+sum(dtagg$unidentified > 0) # 12 plots == nrow(dsub)
 sum(dtagg$unidentified == 0) # 126 normal plots, where NA will be removed.
 
 # get plots with no unidentified trees
@@ -280,7 +221,7 @@ data_unid <- dtree[dtree$plot %in% dsub$plot, ]
 data_unid_obs <- data_unid[!is.na(data_unid$surv), ]
 # na trees
 data_unid_na <- data_unid[is.na(data_unid$surv), ]
-nrow(data_unid_na) # 39 were recorded but unidentified, and there are 127 options.
+nrow(data_unid_na) # 35 were recorded but unidentified, and there are 123 options.
 
 # merge non-na trees
 data_obs <- rbind(data_id, data_unid_obs)
@@ -306,6 +247,7 @@ anyNA(data_unid_na[, -which(names(data_unid_na) %in% c("surv", "age", "age_z", "
 fixed_formula <- formula(~ manag + fire +
                            height_z + elev_z + I(elev_z ^ 2) + pforest_z)
 plot_formula <- formula(~ - 1 + plot)
+basin_formula <- formula(~ - 1 + basin)
 
 X <- model.matrix(fixed_formula, data = data_obs)
 X_unid <- model.matrix(fixed_formula, data = data_unid_na)
@@ -313,10 +255,13 @@ X_unid <- model.matrix(fixed_formula, data = data_unid_na)
 Zp <- model.matrix(plot_formula, data = data_obs)
 Zp_unid <- model.matrix(plot_formula, data = data_unid_na)
 
+Zb <- model.matrix(basin_formula, data = data_obs)
+Zb_unid <- model.matrix(basin_formula, data = data_unid_na)
+
 # data for marginalization of unidentified trees
 
 # this is the response variable, which has to be assigned to different combinations
-# of unidentified trees
+# of unidetified trees
 y_unid <- do.call("c", bin_list) # ahora sí son 35
 y_unid_length <- sapply(bin_list, length)
 y_unid_end <- cumsum(y_unid_length)
@@ -331,17 +276,12 @@ d_unid_start <- d_unid_end - d_unid_length + 1
 
 # the probability will be computed in all data points, and then,
 # different subsets of probability will be used in the bernoulli_logit_lpmf.
+max_combs <- max(sapply(combs, ncol))
 
-# for each plot with unidentified trees, we have the available trees at
-# trees_available_combs. And to use it in Stan, we need to map the corresponding
-# tree ids to rows in the data_unid_na. But Stan does not accept lists, so
-# we collapse all the hypothetical lists into a matrix.
-
-max_combs <- max(sapply(trees_available_combs, ncol)) # ncol to use in each matrix
 combs_rows_matrix <- do.call("rbind", lapply(1:p_unid, function(p) {
   # p = 1
   # print(p)
-  cc <- trees_available_combs[[p]]
+  cc <- combs[[p]]
   # tree_names <- rows_list[[p]]
   mm <- matrix(999999, y_unid_length[p], max_combs) # fill with 999999 so Stan works
   for(j in 1:ncol(cc)) {
@@ -356,6 +296,31 @@ combs_rows_matrix <- do.call("rbind", lapply(1:p_unid, function(p) {
 # In Stan, this should be an integer array, used to subset the rows of prob_surv
 # to compute the loglik.
 
+# # test code:
+# probs <- runif(nrow(data_unid_na)) # fitted probs
+# marginal_logliks <- numeric(p_unid)
+# for(p in 1:p_unid) {
+#   # p = 1
+#   nc <- ncol(combs[[p]])
+#   # print(nc)
+#   rows_response <- y_unid_start[p] : y_unid_end[p]
+#   response <- y_unid[rows_response]
+#
+#   # rows_pred <- d_unid_start[p] : d_unid_end[p]
+#
+#   loglik_combs <- numeric(nc)
+#
+#   for(c in 1:nc) {
+#     # print(c)
+#     rows_pred <- combs_rows_matrix[rows_response, c]
+#     pp <- probs[rows_pred]
+#     loglik_combs[c] <- dbinom(response, prob = pp, size = 1) %>% log %>% sum
+#   }
+#
+#   marginal_logliks[p] <- log(sum(exp(loglik_combs)))
+# }
+# # target += marginal_loglikds
+
 stan_data <- list(
   N = nrow(data_obs),
   N_unid_rows = nrow(data_unid_na),
@@ -363,52 +328,256 @@ stan_data <- list(
 
   K = ncol(X),
   P = ncol(Zp),
-  P_unid = length(trees_available_combs),
+  P_unid = length(combs),
+  B = ncol(Zb),
 
   y = data_obs$surv,
   y_unid = y_unid,
 
   X = X, X_unid = X_unid,
   Zp = Zp, Zp_unid = Zp_unid,
+  Zb = Zb, Zb_unid = Zb_unid,
 
   y_unid_start = y_unid_start,
   y_unid_end = y_unid_end,
   y_unid_length = y_unid_length,
 
-  max_combs = max(sapply(trees_available_combs, ncol)),
+  max_combs = max(sapply(combs, ncol)),
   combs_rows_matrix = combs_rows_matrix,
-  combs_n = sapply(trees_available_combs, ncol),
+  combs_n = sapply(combs, ncol),
 
   unid = 1, # use unidentified trees in likelihood.
 
   prior_intercept_sd = 5,
   prior_b_sd = 3,
-  prior_sigma_sd = 3
+  prior_sigma_sd = 5 #3 # sigma_basin copies the prior (sd = 3). try larger.
 )
 
 
 # Model fit ---------------------------------------------------------------
 
-stan_code <- stan_model("survival.stan", verbose = T)
+stan_code <- stan_model("survival_with_basin.stan", verbose = T)
 
+# # consider unidentified trees
+#
+# running with prior_sd = 5 in sigma
 m1 <- sampling(stan_code, data = stan_data, seed = 1234, refresh = 10,
                # cores = 1, chains = 1, iter = 10, ## test
                cores = 6, chains = 6, iter = 2000,
                control = list(adapt_delta = 0.9))
-saveRDS(m1, file.path("files", "survival_model_samples.rds"))
-# 539.712 / 60 = 9 min
-m1 <- readRDS(file.path("files", "survival_model_samples.rds"))
+saveRDS(m1, file.path("files", "survival_model_samples_with_basin_sd5.rds"))
+# # 734.973 / 60 = 12.24 min
+m1 <- readRDS(file.path("files", "survival_model_samples_with_basin.rds"))
+m1 <- readRDS(file.path("files", "survival_model_samples_with_basin_sd5.rds"))
 sm1 <- summary(m1)[[1]]
 max(sm1[, "Rhat"]); min(sm1[, "n_eff"]) # nice
-# [1] 1.003373
-# [1] 1066.342
+# [1] 1.005346
+# [1] 1413.106
+
+# ingnore unidentified trees
+stan_data2 <- stan_data
+stan_data2$unid <- 0
+m2 <- sampling(stan_code, data = stan_data2, seed = 1234, refresh = 100,
+               # cores = 1, chains = 1, iter = 10,
+               cores = 6, chains = 6, iter = 2000,
+               control = list(adapt_delta = 0.9, max_treedepth = 20))
+sm2 <- summary(m2)[[1]] # anduvo!
+max(sm2[, "Rhat"]); min(sm2[, "n_eff"]) # nice
+
+
+## model without basin (it's hard to estimate sigma)
+## consider unidentified trees
+# stan_code_nb <- stan_model("survival.stan", verbose = T)
+# m3 <- sampling(stan_code_nb, data = stan_data, seed = 1234, refresh = 10,
+#                cores = 6, chains = 6, iter = 2000,
+#                control = list(adapt_delta = 0.9))
+# saveRDS(m3, file.path("files", "survival_model_samples_nobasin.rds"))
+## 530.419 / 60 = 8.84 min
+m3 <- readRDS(file.path("files", "survival_model_samples.rds"))
+sm3 <- summary(m3)[[1]]
+max(sm3[, "Rhat"]); min(sm3[, "n_eff"]) # nice
+# 1.005588
+# 1096.096
+
+# parcelas con corr espacial?
+
+# compare posteriors
+bnames <- colnames(X)
+par_names <- c(bnames, "sigma_plot", "sigma_basin")
+bm1 <- as.matrix(m1, par = c("b", "sigma_plot", "sigma_basin"))
+bm2 <- as.matrix(m3, par = c("b", "sigma_plot", "sigma_basin"))
+colnames(bm1) <- colnames(bm2) <- par_names
+
+# plots to compare
+par(mfrow = c(3, 3))
+for(j in 1:length(par_names)) {
+  # j = 9
+
+  if(par_names[j] %in% c("sigma_plot", "sigma_basin")) {
+    d1 <- density(bm1[, j], from = 0)
+    d2 <- density(bm2[, j], from = 0)
+  } else {
+    d1 <- density(bm1[, j])
+    d2 <- density(bm2[, j])
+  }
+
+  xl <- range(c(d1$x, d2$x))
+  yl <- c(0, max(c(d1$y, d2$y)))
+
+  plot(d1, col = "black", ylim = yl * 1.01, xlim = xl * 1.01,
+       main = NA, xlab = par_names[j], ylab = "density")
+  lines(d2, col = "blue")
+}
+par(mfrow = c(1, 1))
+# parameters considerably.
+
+# the basin sd copies the prior.
+# explore the raneffs
+e_basin <- as.matrix(m1, "e_basin")
+sigma_basin <- as.matrix(m1, "sigma_basin") %>% as.numeric
+
+prior_raneff <- rnorm(length(sigma_basin) * 3, 0, sd = sigma_basin)
+plot(density(prior_raneff), lwd = 2, ylim = c(0, 1), xlim = c(-10, 10))
+for(i in 1:5) {
+  lines(density(e_basin[, i]), col = i+1)
+}
+# although the sd copies the prior, raneffs are quite different.
+
+# increasing the sd sd to 5 changes the prior, because the sigma copies the prior,
+# but the raneff are estimated the same.
+
+# Predictions -------------------------------------------------------------
+
+manag_lev <- levels(dplot$manag)#c("Rangeland", "Livestock exclusion")
+fire_lev <- levels(dplot$fire)#c("Unburned", "Burned")
+
+pdata <- rbind(
+  # elevation
+  expand.grid(
+    manag = factor(manag_lev, levels = manag_lev),
+    fire = factor(fire_lev, fire_lev),
+    elev_z = seq(min(dtree$elev_z), max(dtree$elev_z), length.out = 150),
+    pforest_z = 0,
+    height_z = 0,
+    varying_var = "Elevation (m a.s.l.)"
+  ),
+  # pforest
+  expand.grid(
+    manag = factor(manag_lev, levels = manag_lev),
+    fire = factor(fire_lev, fire_lev),
+    elev_z = 0,
+    pforest_z = seq(min(dtree$pforest_z), max(dtree$pforest_z), length.out = 150),
+    height_z = 0,
+    varying_var = "Forest cover (%)"
+  ),
+  # height
+  expand.grid(
+    manag = factor(manag_lev, levels = manag_lev),
+    fire = factor(fire_lev, fire_lev),
+    elev_z = 0,
+    pforest_z = 0,
+    height_z = seq(min(dtree$height_z), max(dtree$height_z), length.out = 150),
+    varying_var = "Tree height (cm)"
+  )
+)
+
+# tidy factors
+
+# add variables at original scale
+pdata$varying_val <- 0
+pdata$manag_plot <- factor(pdata$manag, manag_lev,
+                           labels = c("Rangeland", "Livestock exclusion"))
+
+rows_replace <- pdata$varying_var == "Elevation (m a.s.l.)"
+pdata$varying_val[rows_replace] <-
+  pdata$elev_z[rows_replace] * pred_sds["elev"] + pred_means["elev"]
+
+rows_replace <- pdata$varying_var == "Forest cover (%)"
+pdata$varying_val[rows_replace] <-
+  pdata$pforest_z[rows_replace] * pred_sds["pforest"] + pred_means["pforest"]
+
+rows_replace <- pdata$varying_var == "Tree height (cm)"
+pdata$varying_val[rows_replace] <-
+  pdata$height_z[rows_replace] * pred_sds["height"] + pred_means["height"]
+
+Xpred <- model.matrix(fixed_formula, pdata)
+
+# choose which model to use!
+bhat <- as.matrix(m1, "b") %>% t
+# bhat <- as.matrix(m2, "b") %>% t
+bhat <- as.matrix(m3, "b") %>% t
+
+phat <- plogis(Xpred %*% bhat)
+psumm <- apply(phat, 1, mean_ci) %>% t %>% as.data.frame %>% "*"(100)
+
+predictions <- cbind(pdata, psumm)
+
+vv <- unique(pdata$varying_var)
+# v2 <- c("elev", "pforest", "")
+plist <- vector("list", 3)
+
+for(v in 1:3) {
+  # v = 1
+  d <- predictions[predictions$varying_var == vv[v], ]
+
+  # add poitns
+  # dp <- dplot
+  # dp$x_class <- cut(dp[, ])
+
+  pp <-
+  ggplot(d, aes(x = varying_val, y = mean, ymin = lower, ymax = upper,
+                          color = fire, fill = fire)) +
+    geom_ribbon(color = NA, alpha = 0.25) +
+    geom_line() +
+    scale_color_viridis(discrete = T, option = "B", end = 0.5) +
+    scale_fill_viridis(discrete = T, option = "B", end = 0.5) +
+    facet_wrap(~ manag_plot, ncol = 2) +
+    scale_y_continuous(limits = c(0, 100), expand = c(0.01, 0.01)) +
+    xlab(vv[v]) +
+    ylab("Survival (%)") +
+    theme(panel.grid.minor = element_blank(),
+          strip.background = element_rect(color = "white", fill = "white"),
+          panel.spacing = unit(3, "mm"),
+          axis.title.y = element_blank(),
+          legend.title = element_blank(),
+          legend.position = "none",
+          axis.text = element_text(size = 9),
+          axis.title = element_text(size = 10),
+          strip.text = element_text(size = 10))
+
+  pp
+  if(v > 1) {
+    pp <- pp + theme(strip.background = element_blank(),
+                     strip.text = element_blank())
+
+  }
+
+  if(v == 2) {
+    pp <- pp + theme(legend.position = "right",
+                     axis.title.y = element_text())
+  }
+
+  plist[[v]] <- pp
+}
+
+surv_plot <- egg::ggarrange(plots = plist, nrow = 3)
+ggsave("figures/survival_prediction_all_data_nobasin.png", plot = surv_plot,
+       width = 14, height = 15, units = "cm")
+# ggsave("figures/survival_prediction_found_tags.png", plot = surv_plot,
+#        width = 14, height = 15, units = "cm")
+
 
 
 # Residuals analyses ------------------------------------------------------
 
+# define model to change easily
+model <- m3
+basin <- FALSE
+
 # extract parameters
-bhat <- as.matrix(m1, "b") %>% t
-sigma_plot <- as.matrix(m1, "sigma_plot") %>% as.numeric
+bhat <- as.matrix(model, "b") %>% t
+sigma_plot <- as.matrix(model, "sigma_plot") %>% as.numeric
+if(basin) sigma_basin <- as.matrix(model, "sigma_basin") %>% as.numeric
 nsim <- length(sigma_plot)
 
 # simulate data for new basins and plots, to compute DHARMa residuals.
@@ -416,7 +585,14 @@ nsim <- length(sigma_plot)
 # simulation for for identified trees
 e_plot_sim <- matrix(rnorm(nrow(X) * nsim, sd = sigma_plot),
                      nrow(X), nsim)
-eta <- X %*% bhat + e_plot_sim
+if(basin) {
+  e_basin_sim <- matrix(rnorm(nrow(X) * nsim, sd = sigma_basin),
+                        nrow(X), nsim)
+  eta <- X %*% bhat + e_plot_sim + e_basin_sim
+} else {
+  eta <- X %*% bhat + e_plot_sim
+}
+
 psim <- plogis(eta)
 ysim <- apply(psim, 2, function(x) rbinom(nrow(X), prob = x, size = 1))
 
@@ -439,7 +615,15 @@ height_unid <- matrix(NA, N_unid_trees, nsim)
 
 e_plot_sim <- matrix(rnorm(nrow(X_unid) * nsim, sd = sigma_plot),
                      nrow(X_unid), nsim)
-eta <- X_unid %*% bhat + e_plot_sim
+
+if(basin) {
+  e_basin_sim <- matrix(rnorm(nrow(X_unid) * nsim, sd = sigma_basin),
+                        nrow(X_unid), nsim)
+  eta <- X_unid %*% bhat + e_plot_sim + e_basin_sim
+} else {
+  eta <- X_unid %*% bhat + e_plot_sim
+}
+
 psim_options <- plogis(eta)
 height_options <- data_unid$height_z
 
@@ -457,7 +641,7 @@ for(i in 1:nsim) {
     for(c in 1:nc) {
       rows_pred = combs_rows_matrix[rows_response, c]
       like_combs[c] = dbinom(y_unid[rows_response], size = 1,
-                             prob = psim_options[rows_pred, i], log = TRUE) %>% sum %>% exp
+                             prob = psim_unid[rows_pred, i], log = TRUE) %>% sum %>% exp
     }
 
     # sample a combination of trees identities based on the likelihood
@@ -468,7 +652,7 @@ for(i in 1:nsim) {
     rows_pred <- combs_rows_matrix[rows_response, chosen_comb]
 
     # get probabilities and simulate
-    psim_chosen <- psim_options[rows_pred, i]
+    psim_chosen <- psim_unid[rows_pred, i]
     ysim_unid[rows_response, i] <- rbinom(ylen, prob = psim_chosen, size = 1)
 
     # get associated predictors (height is the most important)
@@ -502,230 +686,93 @@ plotResiduals(res, form = data_both$manag)
 plotResiduals(res, form = data_both$fire)
 plotResiduals(res, form = data_both$basin)
 plotResiduals(res, form = data_both$plot)
+ggplot(data_both, aes(plot, res)) + geom_boxplot()
 
 res_data <- list(res = res, data_both = data_both)
 saveRDS(res_data, file.path("files", "survival_model_residuals_and_data.rds"))
 
-# Spatial correlation check ------------------------------------------------
+# Spatial correlation? ----------------------------------------------------
 
-vplot <- vplot[vplot$Name %in% levels(dplot$plot), ]
+# plots usable for residuals ("417" was lost)
+plots_unique <- as.character(unique(data_both$plot)) %>% sort
+
+# load waypoints
+vplot <- vect(file.path("..", "plots_waypoints.shp"))
+# plot(vplot)
+vplot <- vplot[vplot$Name %in% plots_unique, ]
 vplot <- vplot[order(vplot$Name), ]
-# all(levels(dplot$plot) == vplot$Name) # OK
+# all(plots_unique == vplot$Name) # OK
 
-# compute spatial distance across observations
 spat_dist <- distance(vplot, symmetrical = TRUE) %>% as.matrix
+
 hist(spat_dist[lower.tri(spat_dist)] / 1000, breaks = 30,
      main = "Pairwise distance distribution (km)")
+
+# assess spat corr in plots random effects
+e_plot_hat <- as.matrix(m1, par = c("e_plot")) %>% t
+e_plot_hat <- e_plot_hat[levels(dtree$plot) %in% plots_unique, ]
+
+e_plot_means <- apply(e_plot_hat, 1, mean)
+e_plot_dist <- as.matrix(dist(e_plot_means))
 
 # residuals diff
 res_agg <- aggregate(res ~ plot, data_both, mean)
 res_dist <- as.matrix(dist(res_agg$res))
 
-dist_df <- data.frame(res_diff = res_dist[lower.tri(res_dist)],
-                      distance = spat_dist[lower.tri(spat_dist)] / 1000)
+dist_df <- data.frame(raneff_diff = e_plot_dist[lower.tri(e_plot_dist)],
+                      res_diff = res_dist[lower.tri(res_dist)],
+                      distance = spat_dist[lower.tri(spat_dist)])
+
+ggplot(dist_df, aes(distance, raneff_diff)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 5),
+              method.args = list(family = Gamma(link = "log")),
+              color = "red")
 
 ggplot(dist_df, aes(distance, res_diff)) +
   geom_point(alpha = 0.25) +
-  geom_smooth(method = "gam", formula = y ~ s(x, k = 15),
-              method.args = list(family = mgcv::betar()),
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 5),
+              method.args = list(family = Gamma(link = "log")),
               color = "red")
 
-# Fire ~ management -------------------------------------------------------
 
-# management affects survival mostly mediated by fire, which is more frequent
-# under livestock exclusion.
-# Here we fit a model of fire probability at the plot level as a function of
-# management, to estimate fire probabilities and include their uncertainty later,
-# when the fire-weighted-average of predictions will be computed.
+# plot random effects variation among basins?
+dplot_basins <- dplot[dplot$plot %in% levels(dplot$plot), ]
+dplot_basins <- dplot_basins[order(dplot_basins$plot), ]
+raneff_basin <- data.frame(raneff_plot = e_plot_means,
+                           basin = dplot_basins$basin)
 
-S <- as.numeric(table(dplot$manag))
-y <- as.numeric(table(dplot$manag[dplot$fire == "Burned plots"]))
+mran <- lm(raneff_plot ~ basin, raneff_basin)
+car::Anova(mran)
+summary(mran)
 
-fire_data <- list(N = length(y), S = S, y = y)
-fire_model <- stan_model("fire.stan", verbose = T)
+ggplot(raneff_basin, aes(x = basin, y = raneff_plot)) +
+  geom_boxplot()
+# parece que sí hay un efecto de cuenca no despreciable, pero no parece haber
+# corr espacial.
+# De todos modos, habría que chequear la corr espacial calculando los residuos
+# dharma marginales a los raneff.
 
-f1 <- sampling(fire_model, data = fire_data,
-               cores = 6, chains = 6, iter = 2000, warmup = 1000)
+# habrá problemas para identificar efectos de cuencas?
+table(data_unid$basin) # sólo hay unid en santa clara (c) y en el hueco (d)
+table(dplot$basin, dplot$fire)
+# las c y e (s clara y hueco) son las que más fuego tienen.
 
-pfire <- as.matrix(f1, "p")
-colnames(pfire) <- levels(dplot$manag)
-saveRDS(pfire, file.path("files", "fire_prob_samples.rds"))
-
-
-# probability of higher fire prob at livestock exlusion
-sum(pfire[, 2] > pfire[, 1]) / nrow(pfire) # 0.9175
-
-format(round(apply(pfire, 2, mean_ci) %>% t, 3), nsmall = 3)
-#                      mean    lower   upper
-# Rangeland           "0.161" "0.085" "0.256"
-# Livestock exclusion "0.254" "0.161" "0.356"
-
-# Predictions survival ~ predictors ----------------------------------------
-
-manag_lev <- levels(dplot$manag)
-fire_lev <- levels(dplot$fire)
-
-pdata <- rbind(
-  # elevation
-  expand.grid(
-    manag = factor(manag_lev, manag_lev),
-    fire = factor(fire_lev, fire_lev),
-    elev_z = seq(min(dtree$elev_z), max(dtree$elev_z), length.out = 150),
-    pforest_z = 0,
-    height_z = 0,
-    varying_var = "Elevation (m a.s.l.)"
-  ),
-  # pforest
-  expand.grid(
-    manag = factor(manag_lev, levels = manag_lev),
-    fire = factor(fire_lev, fire_lev),
-    elev_z = 0,
-    pforest_z = seq(min(dtree$pforest_z), max(dtree$pforest_z), length.out = 150),
-    height_z = 0,
-    varying_var = "Forest cover (%)"
-  ),
-  # height
-  expand.grid(
-    manag = factor(manag_lev, levels = manag_lev),
-    fire = factor(fire_lev, fire_lev),
-    elev_z = 0,
-    pforest_z = 0,
-    height_z = seq(min(dtree$height_z), max(dtree$height_z), length.out = 150),
-    varying_var = "Tree height (cm)"
-  )
-)
-
-# tidy factors
-
-# add variables at original scale
-pdata$varying_val <- 0
-
-rows_replace <- pdata$varying_var == "Elevation (m a.s.l.)"
-pdata$varying_val[rows_replace] <-
-  pdata$elev_z[rows_replace] * pred_sds["elev"] + pred_means["elev"]
-
-rows_replace <- pdata$varying_var == "Forest cover (%)"
-pdata$varying_val[rows_replace] <-
-  pdata$pforest_z[rows_replace] * pred_sds["pforest"] + pred_means["pforest"]
-
-rows_replace <- pdata$varying_var == "Tree height (cm)"
-pdata$varying_val[rows_replace] <-
-  pdata$height_z[rows_replace] * pred_sds["height"] + pred_means["height"]
-
-Xpred <- model.matrix(fixed_formula, pdata)
-
-# choose which model to use!
-bhat <- as.matrix(m1, "b") %>% t
-sigma_plot <- as.matrix(m1, "sigma_plot") %>% as.numeric
-
-eta <- Xpred %*% bhat
-# phat <- logit_norm_mean(eta, sigma_plot)
-saveRDS(phat, "files/survival_model_phat_samples.rds")
-phat <- readRDS("files/survival_model_phat_samples.rds")
-psumm <- apply(phat, 1, mean_ci) %>% t %>% as.data.frame %>% "*"(100)
-
-predictions <- cbind(pdata, psumm)
-
-vv <- unique(pdata$varying_var)
-plist <- vector("list", 3)
-
-breaks <- list(
-  seq(1200, 2400, by = 300),
-  seq(0, 100, by = 25),
-  seq(200, 1400, by = 400)
-)
-
-for(v in 1:3) {
-  # v = 1
-  d <- predictions[predictions$varying_var == vv[v], ]
-
-  # add poitns
-  # dp <- dplot
-  # dp$x_class <- cut(dp[, ])
-
-  pp <-
-    ggplot(d, aes(x = varying_val, y = mean, ymin = lower, ymax = upper,
-                  color = fire, fill = fire)) +
-    geom_ribbon(color = NA, alpha = 0.25) +
-    geom_line() +
-    scale_color_viridis(discrete = T, option = "B", end = 0.5) +
-    scale_fill_viridis(discrete = T, option = "B", end = 0.5) +
-    facet_wrap(~ manag, ncol = 2) +
-    scale_y_continuous(limits = c(0, 100), expand = c(0.01, 0.01)) +
-    scale_x_continuous(breaks = breaks[[v]],
-                       limits = range(c(breaks[[v]], d$varying_val))) +
-    xlab(vv[v]) +
-    ylab("Survival (%)") +
-    theme(panel.grid.minor = element_blank(),
-          strip.background = element_rect(color = "white", fill = "white"),
-          panel.spacing = unit(3, "mm"),
-          axis.title.y = element_blank(),
-          legend.title = element_blank(),
-          legend.position = "none",
-          axis.text = element_text(size = 8),
-          axis.title = element_text(size = 10),
-          strip.text = element_text(size = 10))
-
-  pp
-  if(v > 1) {
-    pp <- pp + theme(strip.background = element_blank(),
-                     strip.text = element_blank())
-
-  }
-
-  if(v == 2) {
-    pp <- pp + theme(legend.position = "right",
-                     axis.title.y = element_text())
-  }
-
-  plist[[v]] <- pp
-}
-
-surv_plot <- egg::ggarrange(plots = plist, nrow = 3)
-ggsave("figures/survival.png", plot = surv_plot,
-       width = 14, height = 15, units = "cm")
-
-# Predictions survival ~ management --------------------------------------
-
-# average the management predictions with respect to fire, but considering that
-# fire varies between management levels.
-pdata_manag <- expand.grid(
-  manag = factor(manag_lev, manag_lev),
-  fire = factor(fire_lev, fire_lev),
-  elev_z = 0,
-  pforest_z = 0,
-  height_z = 0
-)
-
-Xpred_manag <- model.matrix(fixed_formula, pdata_manag)
-eta_manag <- Xpred_manag %*% bhat
-phat_manag <- logit_norm_mean(eta_manag, sigma_plot)
+# habrá corr entre los eff de fuego y cuenca?
+basin_names <- aggregate(as.numeric(as.character(plot)) ~ basin, dplot, mean)
+names(basin_names)[2] <- "plot_ids"
+basin_names$name <- c("Los Gigantes", "Río Condorito", "Santa Clara",
+                      "Río Mina Clavero", "El Hueco")
 
 
+# Fire and management -----------------------------------------------------
 
-# order pfire in the same way as pdata_manag
-pfire_rep <- rbind(1 - t(pfire), t(pfire))
-
-prods <- phat_manag * pfire_rep
-
-means_manag <- aggregate(prods ~ manag, pdata_manag, sum)
-dim(means_manag)
-rownames(means_manag) <- means_manag[, 1]
-means_manag_hat <- as.matrix(means_manag[, -1])
-means_manag_summ <- apply(means_manag_hat, 1, mean_ci) %>% t
-
-format(round(means_manag_summ, 3), nsmall = 3)
-#                       mean    lower   upper
-# Rangeland           "0.894" "0.833" "0.939"
-# Livestock exclusion "0.842" "0.764" "0.905"
-
-diffmeans <- means_manag_hat[2, ] - means_manag_hat[1, ]
-plot(density(diffmeans))
-format(round(mean_ci(diffmeans), 3), nsmall = 3)
-mean_ci(diffmeans)
-# diferencia en la media condicional entre manejo (exclusion - rangeland)
-#   mean    lower    upper
-# "-0.052" "-0.139" " 0.033"
-sum(means_manag_hat[2, ] < means_manag_hat[1, ]) / ncol(means_manag_hat)
-# prob(exclusion < rangeland) = 0.883
-
+table(dplot$fire, dplot$manag)
+dplot$fire_bin <- as.numeric(dplot$fire) - 1
+mmmm <- glm(fire_bin ~ manag, data = dplot, family = "binomial")
+summary(mmmm)
+# pvalue 0.186
+mmmm <- glm(fire_bin ~ manag - 1, data = dplot, family = "binomial")
+coef(mmmm) %>% plogis
+# managrangeland managlivestock exclusion
+# 0.1617647                0.2535211
