@@ -61,14 +61,21 @@ model {
   e_plot_raw ~ std_normal();
 
   // likelihood for identified trees
-  y ~ bernoulli_logit(X * b + Zp * e_plot);
+  {
+    vector[N] p_annual = inv_logit(X * b + Zp * e_plot);
+    vector[N] p_period;
+    for(i in 1:N) p_period[i] = p_annual[i] ^ 15;
+    y ~ bernoulli(p_period);
+  }
 
   // likelihood for unidentified trees
   if(unid) {
     vector[P_unid] marginal_ll; // marginal loglik at each plot
-    vector[N_unid_rows] p_logit = X_unid * b +
-                                  Zp_unid * e_plot;
-                                // logit-prob at each possible tree
+    vector[N_unid_rows] p_annual = inv_logit(X_unid * b +
+                                             Zp_unid * e_plot);
+                                // prob at each possible tree
+    vector[N_unid_rows] p_period;
+    for(i in 1:N_unid_rows) p_period[i] = p_annual[i] ^ 15;
 
     // loop over plots with unidentified trees
     for(p in 1:P_unid) {
@@ -84,8 +91,8 @@ model {
       // loglik for every possible combination at plot p
       for(c in 1:nc) {
         int rows_pred[y_unid_length[p]] = combs_rows_matrix[rows_response, c];
-        loglik_combs[c] = bernoulli_logit_lpmf(y_unid[rows_response] |
-                                               p_logit[rows_pred]);
+        loglik_combs[c] = bernoulli_lpmf(y_unid[rows_response] |
+                                         p_period[rows_pred]);
       }
 
       // add marginal likelihood to the log-posterior

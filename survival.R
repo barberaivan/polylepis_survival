@@ -1,3 +1,8 @@
+# Fit survival model with parameters at annual scale, so the likelihood is
+# p(survival_annual) ^ 15.
+# Compared to fitting at the 15-years scale, only the intercepts and sigma
+# change, but not slopes.
+
 # Packages ----------------------------------------------------------------
 
 library(tidyverse)
@@ -70,19 +75,59 @@ logit_norm_mean <- function(mu, sigma, cores = 15) {
   return(do.call("cbind", means_list))
 }
 
+# compute annual survival, from the probability (p) of surviving in
+# period years, assuming independent annual survival.
+surv_annual <- function(p, period = 15) p ^ (1 / period)
+
+# function to summarize data by group, taking into account that groups should
+# have at least O observations.
+average <- function(data, response, var, O = 15) {
+  # data = d; var = "height"; response = "surv"; O = 15
+
+  ds <- split(data, data$manag_fire)
+
+  rr <- do.call("rbind", lapply(ds, function(loc) {
+    # loc = ds[[2]]
+    ng <- floor(nrow(loc) / O)
+    enes <- rep(O, ng)
+    extra <- nrow(loc) - ng * O
+    enes[ng] <- enes[ng] + extra
+    fac <- rep(letters[1:ng], enes)
+
+    dord <- loc[order(loc[, var, drop = T]), ]
+    dord$fac <- fac
+    dord$response <- dord[, response, drop = T]
+    dord$var <- dord[, var, drop = T]
+    dagg <- aggregate(cbind(response, var) ~ manag + fire + fac, dord, mean)
+    rownames(dagg) <- NULL
+    return(dagg)
+  }))
+  rownames(rr) <- NULL
+  return(rr)
+}
+
+
 # Import data -------------------------------------------------------------
 
 data_name <- "Plots_remedicion 2024.03.10.xls"
 
 # plot-level data
 dplot <- read_excel(file.path("..", data_name), sheet = "plotsall_use")
+nrow(dplot) # initial number of plots = 139
 
 # tree-level data
 dtree <- read_excel(file.path("..", data_name), sheet = "taball_use")
 
 # subset plots to use, with reliable data
 dplot <- dplot[is.na(dplot$`delete?`), ] # with no comment in "delete?"
+nrow(dplot) # used number of plots = 139
+
 dtree <- dtree[dtree$plot %in% dplot$plot, ]
+
+sum(!is.na(as.numeric(dtree$sur2018))) # 841 without NA (identified and not)
+nrow(dtree) # 1229 original trees
+dtree$plot[is.na(as.numeric(dtree$sur2018))] %>% unique %>% length
+# 50 plots where there were trees without tags
 
 length(unique(dtree$plot))
 ddd <- aggregate(hei2003 ~ plot, dtree, length)
@@ -144,9 +189,19 @@ dtree$pforest_z <- (dtree$pforest - pred_means["pforest"]) / pred_sds["pforest"]
 
 # remove rows with NA in any useful predictor
 out <- is.na(dtree$height) | #is.na(dtree$age) |
-       is.na(dtree$plot) | is.na(dtree$elev) | is.na(dtree$pforest)
+  is.na(dtree$plot) | is.na(dtree$elev) | is.na(dtree$pforest)
 dtree <- dtree[!out, ]
 nrow(dtree) # 1229 available cases
+
+# save means to plot later
+dplot$surv <- (dplot$nalive / dplot$ntrees) ^ (1 / 15) * 100
+manag_means <- aggregate(surv ~ manag, dplot, mean)
+# write.csv(manag_means, "files/table_means_growth_manag.csv", row.names = F)
+
+table(dplot$manag)
+
+plot(surv ~ ntrees, dplot)
+mean(dplot$surv)
 
 # Identify complete and incomplete plots -----------------------------------
 
@@ -160,6 +215,7 @@ for(i in 1:nrow(dtagg)) {
   dtagg$na[i] <- sum(is.na(dtree$surv[dtree$plot == dtagg$plot[i]]))
   dtagg$length[i] <- length(dtree$surv[dtree$plot == dtagg$plot[i]])
 }
+sum(dtagg$na > 0) # 50 plots with NA in survival
 
 # all(dtagg$length >= dtagg$na) # OK
 dtagg <- left_join(dtagg, dplot[, c("plot", "ntrees", "nalive", "ndead")], by = "plot")
@@ -171,13 +227,18 @@ dtagg$miss <- dtagg$length - dtagg$ntrees
 sum(dtagg$miss) # 349 missing trees.
 sum(dtagg$miss) / sum(dtagg$length) # 28.5 % missing
 
-plot(miss ~ length, dtagg); abline(0, 1) # ok, always miss < total
-plot(miss ~ na, dtagg); abline(0, 1) # ok, always na >= miss
+# plot(miss ~ length, dtagg); abline(0, 1) # ok, always miss < total
+# plot(miss ~ na, dtagg); abline(0, 1) # ok, always na >= miss
 
 # evaluate how many counted trees have no matching id.
 # counted are ntrees, and identified are length - na
 dtagg$identified <- dtagg$length - dtagg$na
+sum(dtagg$identified) # 841
 dtagg$unidentified <- dtagg$ntrees - dtagg$identified
+sum(dtagg$unidentified) # 39
+
+nrow(dtree[!is.na(dtree$surv), ]) # 841 sin NA en survival
+# pero tienen NA en growth y dieback
 
 # subset plot with unidentified trees
 filter <- dtagg$unidentified > 0
@@ -198,7 +259,7 @@ for(i in 1:nrow(dsub)) {
   dsub$nalive_unid[i] <- dsub$nalive[i] - nalive_id
 }
 
-plot(ndead_unid ~ nalive_unid, dsub); abline(0, 1) # most unid are dead
+# plot(ndead_unid ~ nalive_unid, dsub); abline(0, 1) # most unid are dead
 # in cases where only dead or only alive trees are unidentified,
 # the problem is much smaller.
 sum(dsub$unidentified) # 39 trees
@@ -262,22 +323,29 @@ dsub$combinations_unique <- sapply(trees_available_combs, ncol)
 
 # dtagg has data at the parcel level indicating how many trees there are,
 # how many na, and how many identified.
-# for plots where unidentified == 0, we jus remove surv == NA.
+# for plots where unidentified == 0, we just remove surv == NA.
 # For plots with unidentified > 0, we separate the NA and the obverved.
 dtagg %>% dim()
 sum(dtagg$unidentified > 0) # 13 plots == nrow(dsub)
 sum(dtagg$unidentified == 0) # 126 normal plots, where NA will be removed.
+
 
 # get plots with no unidentified trees
 data_id <- dtree[dtree$plot %in% dtagg$plot[dtagg$unidentified == 0], ]
 # remove NAs
 data_id <- data_id[complete.cases(data_id[, c("height", "elev", "pforest",
                                               "manag", "fire", "surv")]), ]
+nrow(data_id) # 729
 
 # get plots with unidentified trees
 data_unid <- dtree[dtree$plot %in% dsub$plot, ]
+
 # non-na trees
 data_unid_obs <- data_unid[!is.na(data_unid$surv), ]
+nrow(data_unid_obs) # 112
+sum(1-data_unid_obs$surv) # 18 unid dead
+sum(data_unid_obs$surv)   # 94 unid alive
+
 # na trees
 data_unid_na <- data_unid[is.na(data_unid$surv), ]
 nrow(data_unid_na) # 39 were recorded but unidentified, and there are 127 options.
@@ -294,6 +362,8 @@ anyNA(data_unid_na[, -which(names(data_unid_na) %in% c("surv", "age", "age_z", "
 # OK, but there is one NA in perim at unid_na
 
 
+ddddd <- rbind(data_unid_obs, data_unid_na)
+ddddd$plot %>% unique %>% length
 # Note about age data -----------------------------------------------------
 
 # There is one NA at perim2003. If age is used, this code might break.
@@ -304,7 +374,7 @@ anyNA(data_unid_na[, -which(names(data_unid_na) %in% c("surv", "age", "age_z", "
 # fixed effects (X), plot (Zp), basin (Zb).
 # Suffix _unid will indicate the matrix for unidentified trees
 fixed_formula <- formula(~ manag + fire +
-                           height_z + elev_z + I(elev_z ^ 2) + pforest_z)
+                           height_z + elev_z + pforest_z)
 plot_formula <- formula(~ - 1 + plot)
 
 X <- model.matrix(fixed_formula, data = data_obs)
@@ -395,14 +465,31 @@ m1 <- sampling(stan_code, data = stan_data, seed = 1234, refresh = 10,
                # cores = 1, chains = 1, iter = 10, ## test
                cores = 6, chains = 6, iter = 2000,
                control = list(adapt_delta = 0.9))
-saveRDS(m1, file.path("files", "survival_model_samples.rds"))
-# 539.712 / 60 = 9 min
-m1 <- readRDS(file.path("files", "survival_model_samples.rds"))
+saveRDS(m1, file.path("files", "survival_model_samples_annual_elevLinear.rds"))
+# 690 / 60 = 11.5  min
+m1 <- readRDS(file.path("files", "survival_model_samples_annual_elevLinear.rds"))
+# m1 <- readRDS(file.path("files", "survival_model_samples_annual.rds"))
 sm1 <- summary(m1)[[1]]
 max(sm1[, "Rhat"]); min(sm1[, "n_eff"]) # nice
-# [1] 1.003373
-# [1] 1066.342
+# [1] 1.001151
+# [1] 1242.651
 
+ids <- c(grep("b\\[", rownames(sm1)),
+         which("sigma_plot" == rownames(sm1)))
+
+# compute proportion of the posterior above zero
+bbbb <- as.matrix(m1)[, ids]
+# colnames(bbbb)
+pgt0 <- apply(bbbb, 2, function(x) sum(x > 0) / length(x))
+
+summ_survival <- sm1[ids, ]
+summ_survival <- cbind(variable = c(colnames(X), "sigma_plot"),
+                       as.data.frame(sm1[ids, ]),
+                       prob_gt0 = pgt0)
+
+write.csv(summ_survival,
+          file.path("files", "table_summary_survival.csv"),
+          row.names = F)
 
 # Residuals analyses ------------------------------------------------------
 
@@ -417,7 +504,7 @@ nsim <- length(sigma_plot)
 e_plot_sim <- matrix(rnorm(nrow(X) * nsim, sd = sigma_plot),
                      nrow(X), nsim)
 eta <- X %*% bhat + e_plot_sim
-psim <- plogis(eta)
+psim <- plogis(eta) ^ 15 # 15 years survival
 ysim <- apply(psim, 2, function(x) rbinom(nrow(X), prob = x, size = 1))
 
 # In the case of unidentified trees, for each iteration, we compute
@@ -440,7 +527,7 @@ height_unid <- matrix(NA, N_unid_trees, nsim)
 e_plot_sim <- matrix(rnorm(nrow(X_unid) * nsim, sd = sigma_plot),
                      nrow(X_unid), nsim)
 eta <- X_unid %*% bhat + e_plot_sim
-psim_options <- plogis(eta)
+psim_options <- plogis(eta) ^ 15
 height_options <- data_unid$height_z
 
 # loop over plots with unidentified trees
@@ -504,7 +591,14 @@ plotResiduals(res, form = data_both$basin)
 plotResiduals(res, form = data_both$plot)
 
 res_data <- list(res = res, data_both = data_both)
-saveRDS(res_data, file.path("files", "survival_model_residuals_and_data.rds"))
+saveRDS(res_data, file.path("files", "survival_model_residuals_and_data_elevLinear.rds"))
+#
+res_data <- readRDS(file.path("files", "survival_model_residuals_and_data_elevLinear.rds"))
+data_both <- res_data$data_both
+# plot model residuals in a fancy way
+# manag, fire
+# elev, pforest, height
+
 
 # Spatial correlation check ------------------------------------------------
 
@@ -530,6 +624,120 @@ ggplot(dist_df, aes(distance, res_diff)) +
               method.args = list(family = mgcv::betar()),
               color = "red")
 
+
+# Residuals plots ---------------------------------------------------------
+
+res_elev <-
+ggplot(data_both, aes(x = elev, y = res)) +
+  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
+             linewidth = 0.3, color = viridis(1)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10, bs = "cr"),
+              method.args = list(family = mgcv::betar()),
+              color = viridis(1, begin = 0.4),
+              fill = viridis(1, begin = 0.4)) +
+  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  xlab("Elevation (m a.s.l.)") +
+  ylab("DHARMa residuals") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        plot.title = element_text(hjust = 0),
+        panel.grid.minor = element_blank()) +
+  ggtitle("A")
+
+res_pforest <-
+ggplot(data_both, aes(x = pforest, y = res)) +
+  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
+             linewidth = 0.3, color = viridis(1)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10, bs = "cr"),
+              method.args = list(family = mgcv::betar()),
+              color = viridis(1, begin = 0.4),
+              fill = viridis(1, begin = 0.4)) +
+  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  xlab("Forest cover (%)") +
+  ylab("DHARMa residuals") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        plot.title = element_text(hjust = 0),
+        panel.grid.minor = element_blank(),
+        axis.title.y = element_text(color = "white")) +
+  ggtitle("B")
+
+res_height <-
+ggplot(data_both, aes(x = height, y = res)) +
+  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
+             linewidth = 0.3, color = viridis(1)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10, bs = "cr"),
+              method.args = list(family = mgcv::betar()),
+              color = viridis(1, begin = 0.4),
+              fill = viridis(1, begin = 0.4)) +
+  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  xlab("Tree height (cm)") +
+  ylab("DHARMa residuals") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        plot.title = element_text(hjust = 0),
+        panel.grid.minor = element_blank(),
+        axis.title.y = element_text(color = "white")) +
+  ggtitle("C")
+
+
+data_both$managb <- factor(data_both$manag, levels = levels(data_both$manag),
+                           labels = c("Rangeland", "Livestock\nexcusion"))
+res_manag <-
+ggplot(data_both, aes(x = managb, y = res)) +
+  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
+             linewidth = 0.3, color = viridis(1)) +
+  geom_boxplot(width = 0.5, fill = NA) +
+  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  xlab("Management") +
+  ylab("DHARMa residuals") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        plot.title = element_text(hjust = 0),
+        panel.grid.minor = element_blank()) +
+  ggtitle("D")
+
+res_fire <-
+ggplot(data_both, aes(x = fire, y = res)) +
+  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
+             linewidth = 0.3, color = viridis(1)) +
+  geom_boxplot(width = 0.5, fill = NA) +
+  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  xlab("Fire occurrence") +
+  ylab("DHARMa residuals") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        plot.title = element_text(hjust = 0),
+        panel.grid.minor = element_blank(),
+        axis.title.y = element_text(color = "white")) +
+  ggtitle("E")
+
+res_spat <-
+ggplot(dist_df, aes(distance, res_diff)) +
+  geom_point(alpha = 0.15) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 50),
+              method.args = list(family = mgcv::betar()),
+              color = viridis(1, begin = 0.4),
+              fill = viridis(1, begin = 0.4)) +
+  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  xlab("Distance (km)") +
+  ylab("Residuals difference") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        plot.title = element_text(hjust = 0),
+        panel.grid.minor = element_blank()) +
+  ggtitle("F")
+
+
+res_surv <- egg::ggarrange(res_elev, res_pforest, res_height,
+                           res_manag, res_fire, res_spat,
+                           ncol = 3)
+ggsave("figures/survivial_residuals.png", plot = res_surv,
+       width = 17, height = 11, units = "cm")
+
 # Fire ~ management -------------------------------------------------------
 
 # management affects survival mostly mediated by fire, which is more frequent
@@ -538,32 +746,43 @@ ggplot(dist_df, aes(distance, res_diff)) +
 # management, to estimate fire probabilities and include their uncertainty later,
 # when the fire-weighted-average of predictions will be computed.
 
-S <- as.numeric(table(dplot$manag))
-y <- as.numeric(table(dplot$manag[dplot$fire == "Burned plots"]))
-
-fire_data <- list(N = length(y), S = S, y = y)
-fire_model <- stan_model("fire.stan", verbose = T)
-
-f1 <- sampling(fire_model, data = fire_data,
-               cores = 6, chains = 6, iter = 2000, warmup = 1000)
-
-pfire <- as.matrix(f1, "p")
-colnames(pfire) <- levels(dplot$manag)
-saveRDS(pfire, file.path("files", "fire_prob_samples.rds"))
+# S <- as.numeric(table(dplot$manag))
+# y <- as.numeric(table(dplot$manag[dplot$fire == "Burned plots"]))
+#
+# fire_data <- list(N = length(y), S = S, y = y)
+# fire_model <- stan_model("fire.stan", verbose = T)
+#
+# f1 <- sampling(fire_model, data = fire_data,
+#                cores = 6, chains = 6, iter = 2000, warmup = 1000)
+#
+# pfire <- as.matrix(f1, "p")
+# colnames(pfire) <- levels(dplot$manag)
+# saveRDS(pfire, file.path("files", "fire_prob_samples.rds"))
+pfire <- readRDS(file.path("files", "fire_prob_samples.rds"))
 
 
 # probability of higher fire prob at livestock exlusion
-sum(pfire[, 2] > pfire[, 1]) / nrow(pfire) # 0.9175
+firediff_p <- sum(pfire[, 2] > pfire[, 1]) / nrow(pfire) # 0.9175
+firediff <- pfire[, 2] - pfire[, 1]
+
+fff <- cbind(pfire, diff = firediff)
 
 format(round(apply(pfire, 2, mean_ci) %>% t, 3), nsmall = 3)
 #                      mean    lower   upper
 # Rangeland           "0.161" "0.085" "0.256"
 # Livestock exclusion "0.254" "0.161" "0.356"
 
+fire_table <- apply(fff, 2, mean_ci) %>% t
+fire_table <- rbind(fire_table, matrix(c(firediff_p, NA, NA), 1))
+rownames(fire_table)[4] <- "prob"
+write.csv(fire_table, file.path("files", "table_summary_fire.csv"))
+
 # Predictions survival ~ predictors ----------------------------------------
 
 manag_lev <- levels(dplot$manag)
 fire_lev <- levels(dplot$fire)
+
+height_lim <- (1200 - pred_means["height"]) / pred_sds["height"]
 
 pdata <- rbind(
   # elevation
@@ -590,7 +809,7 @@ pdata <- rbind(
     fire = factor(fire_lev, fire_lev),
     elev_z = 0,
     pforest_z = 0,
-    height_z = seq(min(dtree$height_z), max(dtree$height_z), length.out = 150),
+    height_z = seq(min(dtree$height_z), height_lim, length.out = 150),
     varying_var = "Tree height (cm)"
   )
 )
@@ -614,48 +833,83 @@ pdata$varying_val[rows_replace] <-
 
 Xpred <- model.matrix(fixed_formula, pdata)
 
-# choose which model to use!
+# extract parameters
 bhat <- as.matrix(m1, "b") %>% t
 sigma_plot <- as.matrix(m1, "sigma_plot") %>% as.numeric
 
 eta <- Xpred %*% bhat
-# phat <- logit_norm_mean(eta, sigma_plot)
-saveRDS(phat, "files/survival_model_phat_samples.rds")
-phat <- readRDS("files/survival_model_phat_samples.rds")
-psumm <- apply(phat, 1, mean_ci) %>% t %>% as.data.frame %>% "*"(100)
+phat <- logit_norm_mean(eta, sigma_plot, cores = 8)
 
+# summarize posterior
+psumm <- apply(phat, 1, mean_ci) %>% t %>% as.data.frame %>% "*"(100)
 predictions <- cbind(pdata, psumm)
 
 vv <- unique(pdata$varying_var)
+vv_names <- paste(c("(1)", "(2)", "(3)"), unique(pdata$varying_var))
+predictions$managlet <- factor(predictions$manag,
+                               levels = levels(predictions$manag),
+                               labels = c("A. Rangeland",
+                                          "B. Livestock exclusion"))
+
+saveRDS(predictions, file.path("files", "survival_predictions.rds"))
+predictions <- readRDS(file.path("files", "survival_predictions.rds"))
+
 plist <- vector("list", 3)
 
 breaks <- list(
   seq(1200, 2400, by = 300),
   seq(0, 100, by = 25),
-  seq(200, 1400, by = 400)
+  seq(200, 1200, by = 200)
 )
+
+# summarized data to plot alongside predictions
+d <- res_data$data_both
+d$manag_fire <- factor(
+  paste(d$manag, d$fire, sep = "_"),
+  levels = unique(paste(d$manag, d$fire, sep = "_"))
+)
+
+vars <- c("elev", "pforest", "height")
+dlist <- vector("list", 3)
+for(i in 1:3) {
+  # i = 1
+  dd <- average(d, "surv", vars[i], O = 15)
+  dd$response <- dd$response ^ (1/15)
+  dd$managlet <- factor(dd$manag,
+                        levels = levels(dd$manag),
+                        labels = c("A. Rangeland",
+                                   "B. Livestock exclusion"))
+  dlist[[i]] <- dd
+}
+lapply(dlist, function(x) table(x$manag, x$fire))
 
 for(v in 1:3) {
   # v = 1
-  d <- predictions[predictions$varying_var == vv[v], ]
+  ddd <- predictions[predictions$varying_var == vv[v], ]
 
   # add poitns
   # dp <- dplot
   # dp$x_class <- cut(dp[, ])
 
   pp <-
-    ggplot(d, aes(x = varying_val, y = mean, ymin = lower, ymax = upper,
+    ggplot(ddd, aes(x = varying_val, y = mean, ymin = lower, ymax = upper,
                   color = fire, fill = fire)) +
     geom_ribbon(color = NA, alpha = 0.25) +
     geom_line() +
-    scale_color_viridis(discrete = T, option = "B", end = 0.5) +
-    scale_fill_viridis(discrete = T, option = "B", end = 0.5) +
-    facet_wrap(~ manag, ncol = 2) +
-    scale_y_continuous(limits = c(0, 100), expand = c(0.01, 0.01)) +
+    geom_point(data = dlist[[v]],
+               mapping = aes(x = var, y = response * 100,
+                             color = fire, fill = fire),
+               inherit.aes = F, alpha = 0.7, size = 0.8) +
+    # geom_rug(mapping = aes(x = elev, color = fire, fill = fire),
+    #          data = d, inherit.aes = F) +
+    scale_color_viridis(discrete = T, option = "B", end = 0.35) +
+    scale_fill_viridis(discrete = T, option = "B", end = 0.35) +
+    facet_wrap(~ managlet, ncol = 2) +
+    scale_y_continuous(limits = c(65, 100), expand = c(0.01, 0.01)) +
     scale_x_continuous(breaks = breaks[[v]],
                        limits = range(c(breaks[[v]], d$varying_val))) +
-    xlab(vv[v]) +
-    ylab("Survival (%)") +
+    xlab(vv_names[v]) +
+    ylab("Annual survival probability (%)") +
     theme(panel.grid.minor = element_blank(),
           strip.background = element_rect(color = "white", fill = "white"),
           panel.spacing = unit(3, "mm"),
@@ -682,8 +936,8 @@ for(v in 1:3) {
 }
 
 surv_plot <- egg::ggarrange(plots = plist, nrow = 3)
-ggsave("figures/survival.png", plot = surv_plot,
-       width = 14, height = 15, units = "cm")
+ggsave("figures/survival_predictions.png", plot = surv_plot,
+       width = 16, height = 15, units = "cm")
 
 # Predictions survival ~ management --------------------------------------
 
@@ -699,13 +953,10 @@ pdata_manag <- expand.grid(
 
 Xpred_manag <- model.matrix(fixed_formula, pdata_manag)
 eta_manag <- Xpred_manag %*% bhat
-phat_manag <- logit_norm_mean(eta_manag, sigma_plot)
-
-
+phat_manag <- logit_norm_mean(eta_manag, sigma_plot, cores = 14)
 
 # order pfire in the same way as pdata_manag
 pfire_rep <- rbind(1 - t(pfire), t(pfire))
-
 prods <- phat_manag * pfire_rep
 
 means_manag <- aggregate(prods ~ manag, pdata_manag, sum)
@@ -714,18 +965,25 @@ rownames(means_manag) <- means_manag[, 1]
 means_manag_hat <- as.matrix(means_manag[, -1])
 means_manag_summ <- apply(means_manag_hat, 1, mean_ci) %>% t
 
-format(round(means_manag_summ, 3), nsmall = 3)
+format(round(means_manag_summ * 100, 2), nsmall = 2)
 #                       mean    lower   upper
-# Rangeland           "0.894" "0.833" "0.939"
-# Livestock exclusion "0.842" "0.764" "0.905"
+# Rangeland           "99.18" "98.45" "99.58"
+# Livestock exclusion "98.88" "98.01" "99.39"
 
 diffmeans <- means_manag_hat[2, ] - means_manag_hat[1, ]
 plot(density(diffmeans))
-format(round(mean_ci(diffmeans), 3), nsmall = 3)
-mean_ci(diffmeans)
+format(round(mean_ci(diffmeans) * 100, 2), nsmall = 2)
+
 # diferencia en la media condicional entre manejo (exclusion - rangeland)
-#   mean    lower    upper
-# "-0.052" "-0.139" " 0.033"
-sum(means_manag_hat[2, ] < means_manag_hat[1, ]) / ncol(means_manag_hat)
-# prob(exclusion < rangeland) = 0.883
+#   mean   lower   upper
+# "-0.30" "-1.16" " 0.48"
+probb <- sum(means_manag_hat[2, ] < means_manag_hat[1, ]) / ncol(means_manag_hat)
+# prob(exclusion < rangeland) = 0.8011667
+
+# save table
+eeexp <- rbind(means_manag_summ, mean_ci(diffmeans),
+               matrix(c(probb, NA, NA), 1))
+rownames(eeexp)[3:4] <- c("diff", "prob")
+
+write.csv(eeexp, file.path("files", "table_summary_survival_manag_marginal.csv"))
 
