@@ -113,7 +113,7 @@ data_name <- "Plots_remedicion 2024.03.10.xls"
 
 # plot-level data
 dplot <- read_excel(file.path("..", data_name), sheet = "plotsall_use")
-nrow(dplot) # initial number of plots = 139
+nrow(dplot) # initial number of plots = 146
 
 # tree-level data
 dtree <- read_excel(file.path("..", data_name), sheet = "taball_use")
@@ -198,10 +198,9 @@ dplot$surv <- (dplot$nalive / dplot$ntrees) ^ (1 / 15) * 100
 manag_means <- aggregate(surv ~ manag, dplot, mean)
 # write.csv(manag_means, "files/table_means_growth_manag.csv", row.names = F)
 
-table(dplot$manag)
-
-plot(surv ~ ntrees, dplot)
-mean(dplot$surv)
+# table(dplot$manag)
+# plot(surv ~ ntrees, dplot)
+# mean(dplot$surv)
 
 # Identify complete and incomplete plots -----------------------------------
 
