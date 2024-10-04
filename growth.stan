@@ -17,11 +17,15 @@ data {
   real prior_alphasig_sd;
   real prior_alphasig_mean;
   real prior_betasig_sd;
+
+  real prior_nu_a;
+  real prior_nu_b;
 }
 
 parameters {
   vector[K] b_raw;                   // fixed parameters
   vector[Ks] bs_raw;
+  real<lower=0> nu;
   vector[P] e_plot_raw;              // plot random effects
   real<lower=0> sigma_plot_raw;      // raneff sd
 }
@@ -37,8 +41,9 @@ transformed parameters {
   sigma_plot = sigma_plot_raw * prior_sigma_sd;
   e_plot = e_plot_raw * sigma_plot;
 
-  bs[1] = bs_raw[1] * prior_alphasig_sd + prior_alphasig_mean;
-  bs[2] = bs_raw[2] * prior_betasig_sd;
+  // Xs has intercept(s) without reference and predictors after
+  bs[1:(Ks-1)] = bs_raw[1:(Ks-1)] * prior_alphasig_sd + prior_alphasig_mean;
+  bs[Ks] = bs_raw[Ks] * prior_betasig_sd;
 }
 
 model {
@@ -47,11 +52,12 @@ model {
   sigma_plot_raw ~ std_normal();
   e_plot_raw ~ std_normal();
   bs_raw ~ std_normal();
+  nu ~ gamma(prior_nu_a, prior_nu_b);
 
   // likelihood
   {
     vector[N] mu = X * b + Zp * e_plot;
     vector[N] sigma = exp(Xs * bs);
-    y ~ normal(mu, sigma);
+    y ~ student_t(nu, mu, sigma);
   }
 }

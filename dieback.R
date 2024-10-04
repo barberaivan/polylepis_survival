@@ -5,6 +5,9 @@
 
 library(tidyverse)
 library(viridis)
+library(ggh4x)
+library(deeptime)
+library(grid)
 library(readxl)
 library(posterior)
 library(rstan)
@@ -59,7 +62,7 @@ average <- function(data, response, var, O = 15) {
 
 # Import data -------------------------------------------------------------
 
-data_name <- "Plots_remedicion 2024.03.10.xls"
+data_name <- "Plots_remedicion 2024.08.14.xls"
 
 # plot-level data
 dplot <- read_excel(file.path("..", data_name), sheet = "plotsall_use")
@@ -67,8 +70,7 @@ dplot <- read_excel(file.path("..", data_name), sheet = "plotsall_use")
 # tree-level data
 dtree <- read_excel(file.path("..", data_name), sheet = "taball_use")
 
-# subset plots to use, with reliable data
-dplot <- dplot[is.na(dplot$`delete?`), ] # with no comment in "delete?"
+dtree$plot <- dtree$nplot
 dtree <- dtree[dtree$plot %in% dplot$plot, ]
 
 length(unique(dtree$plot))
@@ -105,14 +107,22 @@ dplot$basin <- factor(dplot$basin)
 dplot$fire <- factor(as.character(dplot$fire), levels = c("0", "1"),
                      labels = c("Unburned plots", "Burned plots"))
 dplot$manag <- factor(dplot$manag, levels = c("a", "b"),
-                      labels = c("Rangeland", "Livestock exclusion"))
+                      labels = c("Ranching", "Conservation"))
+dplot$manag_fire <- paste(dplot$manag, dplot$fire, sep = "_")
+dplot$manag_fire <- factor(dplot$manag_fire,
+                           levels = c(
+                             "Ranching_Unburned plots", "Ranching_Burned plots",
+                             "Conservation_Unburned plots", "Conservation_Burned plots"
+                           ))
+levels_managfire <- levels(dplot$manag_fire)
 
 # add age
 dtree$perim <- as.numeric(dtree$perim)
 dtree$age <- tree_age(dtree$perim, dtree$prock)
 
 # add plot variables to tree data
-dplot_sub <- dplot[, c("plot", "manag", "fire", "elev", "pforest", "basin")]
+dplot_sub <- dplot[, c("plot", "manag", "fire", "manag_fire",
+                       "elev", "pforest", "basin")]
 dtree <- left_join(dtree, dplot_sub, by = "plot")
 
 # resolve duplicated tree_ids
@@ -139,15 +149,15 @@ dtree$pforest_z <- (dtree$pforest - pred_means["pforest"]) / pred_sds["pforest"]
 out <- is.na(dtree$growth) | is.na(dtree$height) |#| is.na(dtree$age)
 is.na(dtree$plot) | is.na(dtree$elev) | is.na(dtree$pforest)
 
-is.na(dtree$growth) %>% sum  # 565 trees without growth and dieback
-is.na(dtree$dieback) %>% sum
+is.na(dtree$growth) %>% sum  # 567 trees without growth,
+is.na(dtree$dieback) %>% sum # 565 without dieback
 is.na(dtree$height) %>% sum
 is.na(dtree$plot) %>% sum
 is.na(dtree$elev) %>% sum
 is.na(dtree$pforest) %>% sum
 
 dtree <- dtree[!out, ]
-nrow(dtree) # 662 - 2 available cases
+nrow(dtree) # 662 available cases
 
 # transform dieback to (0, 1)
 dtree$dieback01 <- dtree$dieback / 100
@@ -156,11 +166,14 @@ dtree$dieback01[dtree$dieback < 0.5] <- 0.5 / 100
 
 dtree$dieback_logit <- qlogis(dtree$dieback01)
 
-
 # save means to plot later
 plot_means2 <- aggregate(dieback ~ plot + manag, dtree, mean)
 manag_means <- aggregate(dieback ~ manag, plot_means2, mean)
 write.csv(manag_means, "files/table_means_dieback_manag.csv", row.names = F)
+
+# Export processed data table to plot data in predictions
+saveRDS(dtree, "files/dieback_data_dtree.rds")
+
 
 # Explore age-size-growth-dieback -------------------------------------------------
 
@@ -173,12 +186,13 @@ dtree$growth_rel <- dtree$height18 / dtree$height
 # table(dtree$dieback) / nrow(dtree) * 100
 
 cor.test(dtree$growth, dtree$dieback)
-# p-value < 2.2e-16
+# t = -12.572, df = 660, p-value < 2.2e-16
+# alternative hypothesis: true correlation is not equal to 0
 # 95 percent confidence interval:
-#   -0.4998529 -0.3766748
+#   -0.4990471 -0.3759527
 # sample estimates:
 #   cor
-# -0.4403335
+# -0.4395614
 
 # Prior check for scale ---------------------------------------------------
 
@@ -200,10 +214,6 @@ cor.test(dtree$growth, dtree$dieback)
 # }
 
 # Data for Stan -----------------------------------------------------------
-
-dtree$manag_fire <- paste(dtree$manag, dtree$fire, sep = "_")
-dtree$manag_fire <- factor(dtree$manag_fire,
-                           levels = unique(dtree$manag_fire))
 
 # make three design matrices
 # fixed effects (X) and plot (Zp)
@@ -244,16 +254,15 @@ m1 <- sampling(stan_code, data = stan_data, seed = 1234, refresh = 100,
                # cores = 1, chains = 1, iter = 5,
                cores = 6, chains = 6, iter = 2000,
                control = list(adapt_delta = 0.9))
-
+# 46 s
 saveRDS(m1, file.path("files", "dieback_model_samples.rds"))
 m1 <- readRDS(file.path("files", "dieback_model_samples.rds"))
 
 # purrfect
 sm1 <- summary(m1)[[1]]
 max(sm1[, "Rhat"]); min(sm1[, "n_eff"]) # nice
-# [1] 1.003104
-# [1] 1155.198
-
+# [1] 1.002598
+# [1] 1242.395
 
 ids <- c(grep("b\\[", rownames(sm1)),
          grep("scale\\[", rownames(sm1)),
@@ -287,11 +296,11 @@ alpha <- as.matrix(m1, "alpha") %>% as.numeric
 sigma_plot <- as.matrix(m1, "sigma_plot") %>% as.numeric
 nsim <- length(sigma_plot)
 
-# simulate data for new plots, to compute DHARMa residuals.
-e_plot_sim <- matrix(rnorm(nrow(X) * nsim, sd = sigma_plot),
-                     nrow(X), nsim)
-xi <- X %*% bhat + e_plot_sim
-# eta <- X %*% bhat + Zp %*% bplot
+# # simulate data for new plots, to compute DHARMa residuals.
+# e_plot_sim <- matrix(rnorm(nrow(X) * nsim, sd = sigma_plot),
+#                      nrow(X), nsim)
+# xi <- X %*% bhat + e_plot_sim
+xi <- X %*% bhat + Zp %*% bplot
 scale_sim <- Xs %*% scale
 
 ysim <- sapply(1:nsim, function(i) {
@@ -312,8 +321,7 @@ plot(res, rank = F)
 plotResiduals(res, form = dtree$height, rank = F) # quadratic??
 plotResiduals(res, form = dtree$elev, rank = F) # OK
 plotResiduals(res, form = dtree$pforest, rank = F) # quad?
-plotResiduals(res, form = dtree$manag)
-plotResiduals(res, form = dtree$fire)
+plotResiduals(res, form = dtree$manag_fire)
 plotResiduals(res, form = dtree$basin)
 
 # marginal density posterior check
@@ -324,6 +332,7 @@ for(i in sss) {
   lines(d, col = rgb(0, 1, 0, 0.1))
 }
 lines(density(dtree$dieback_logit), lwd = 2)
+# maybe it's really a skew-t...
 
 # escala dieback
 ysim_p <- plogis(ysim)
@@ -340,21 +349,55 @@ lines(density(dtree$dieback01, from = 0, to = 1), lwd = 2)
 
 # Spatial correlation check ------------------------------------------------
 
-# residuals diff
-res_agg <- aggregate(res ~ plot, dtree, mean)
-res_dist <- as.matrix(dist(res_agg$res))
-
-vplot <- vplot[vplot$Name %in% res_agg$plot, ]
+vplot <- vplot[vplot$Name %in% dplot$plot, ]
 vplot <- vplot[order(vplot$Name), ]
 
 # compute spatial distance across observations
 spat_dist <- distance(vplot, symmetrical = TRUE) %>% as.matrix
 
-dist_df <- data.frame(res_diff = res_dist[lower.tri(res_dist)],
+e_plot <- as.matrix(m1, "e_plot") |> colMeans()
+ranef_dist <- as.matrix(dist(e_plot))
+
+dist_df <- data.frame(raneff_diff = ranef_dist[lower.tri(ranef_dist)],
                       distance = spat_dist[lower.tri(spat_dist)] / 1000)
 
 
+# Aggreagate in 100 bins
+nb <- 100
+ng1 <- floor(nrow(dist_df) / nb)
+ng2 <- nrow(dist_df) %% nb
+group <- c(rep(1:nb, each = ng1), rep(nb, ng2))
+# length(group) == nrow(dist_df) OK
+dist_df <- dist_df[order(dist_df$distance), ]
+dist_df$group <- group
+dist_agg <- aggregate(cbind(raneff_diff, distance) ~ group, dist_df, mean)
+
 # Residuals plots ---------------------------------------------------------
+
+res_pforest <-
+  ggplot(dtree, aes(x = pforest, y = res)) +
+  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
+             linewidth = 0.3, color = viridis(1)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10, bs = "cr"),
+              method.args = list(family = mgcv::betar()),
+              color = viridis(1, begin = 0.4),
+              fill = viridis(1, begin = 0.4)) +
+  facet_wrap(vars(manag), nrow = 1) +
+  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  xlab("Tree cover (%)") +
+  ylab("DHARMa residuals") +
+  theme(panel.grid.minor = element_blank(),
+        strip.background = element_rect(color = "white", fill = "white"),
+        panel.spacing = unit(3, "mm"),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "none",
+        axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        strip.text = element_text(size = 10)) +
+  ggtitle("A")
+res_pforest
 
 res_elev <-
   ggplot(dtree, aes(x = elev, y = res)) +
@@ -366,32 +409,20 @@ res_elev <-
               color = viridis(1, begin = 0.4),
               fill = viridis(1, begin = 0.4)) +
   scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  facet_wrap(vars(manag), nrow = 1) +
   xlab("Elevation (m a.s.l.)") +
   ylab("DHARMa residuals") +
-  theme(axis.text = element_text(size = 8),
-        axis.title = element_text(size = 10),
-        plot.title = element_text(hjust = 0),
-        panel.grid.minor = element_blank()) +
-  ggtitle("A")
-
-res_pforest <-
-  ggplot(dtree, aes(x = pforest, y = res)) +
-  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
-             linewidth = 0.3, color = viridis(1)) +
-  geom_point(alpha = 0.4) +
-  geom_smooth(method = "gam", formula = y ~ s(x, k = 10, bs = "cr"),
-              method.args = list(family = mgcv::betar()),
-              color = viridis(1, begin = 0.4),
-              fill = viridis(1, begin = 0.4)) +
-  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
-  xlab("Forest cover (%)") +
-  ylab("DHARMa residuals") +
-  theme(axis.text = element_text(size = 8),
-        axis.title = element_text(size = 10),
-        plot.title = element_text(hjust = 0),
-        panel.grid.minor = element_blank(),
-        axis.title.y = element_text(color = "white")) +
+  theme(panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        panel.spacing = unit(3, "mm"),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "none",
+        axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10)) +
   ggtitle("B")
+res_elev
 
 res_height <-
   ggplot(dtree, aes(x = height, y = res)) +
@@ -403,31 +434,20 @@ res_height <-
               color = viridis(1, begin = 0.4),
               fill = viridis(1, begin = 0.4)) +
   scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+  facet_wrap(vars(manag), nrow = 1) +
   xlab("Tree height (cm)") +
   ylab("DHARMa residuals") +
-  theme(axis.text = element_text(size = 8),
-        axis.title = element_text(size = 10),
-        plot.title = element_text(hjust = 0),
-        panel.grid.minor = element_blank(),
-        axis.title.y = element_text(color = "white")) +
+  theme(panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        panel.spacing = unit(3, "mm"),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "none",
+        axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10)) +
   ggtitle("C")
-
-
-dtree$managb <- factor(dtree$manag, levels = levels(dtree$manag),
-                       labels = c("Rangeland", "Livestock\nexcusion"))
-res_manag <-
-  ggplot(dtree, aes(x = managb, y = res)) +
-  geom_hline(yintercept = c(0.25, 0.5, 0.75), linetype = "dashed",
-             linewidth = 0.3, color = viridis(1)) +
-  geom_boxplot(width = 0.5, fill = NA) +
-  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
-  xlab("Management") +
-  ylab("DHARMa residuals") +
-  theme(axis.text = element_text(size = 8),
-        axis.title = element_text(size = 10),
-        plot.title = element_text(hjust = 0),
-        panel.grid.minor = element_blank()) +
-  ggtitle("D")
+res_height
 
 res_fire <-
   ggplot(dtree, aes(x = fire, y = res)) +
@@ -435,59 +455,51 @@ res_fire <-
              linewidth = 0.3, color = viridis(1)) +
   geom_boxplot(width = 0.5, fill = NA) +
   scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
-  xlab("Fire occurrence") +
+  facet_wrap(vars(manag), nrow = 1) +
+  xlab("Fire") +
   ylab("DHARMa residuals") +
-  theme(axis.text = element_text(size = 8),
-        axis.title = element_text(size = 10),
-        plot.title = element_text(hjust = 0),
-        panel.grid.minor = element_blank(),
-        axis.title.y = element_text(color = "white")) +
-  ggtitle("E")
+  theme(panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        panel.spacing = unit(3, "mm"),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "none",
+        axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10)) +
+  ggtitle("D")
+res_fire
+
+yname <- textGrob("Dieback DHARMa residuals",
+                  gp = gpar(fontsize = 10), rot = 90)
+
+res_all <-
+  deeptime::ggarrange2(res_pforest, res_elev, res_height, res_fire,
+                       ncol = 1, left = yname)
+
+ggsave("figures/dieback_residuals_01.png", plot = res_all,
+       width = 17, height = 24, units = "cm")
 
 res_spat <-
-  ggplot(dist_df, aes(distance, res_diff)) +
-  geom_point(alpha = 0.15) +
-  geom_smooth(method = "gam", formula = y ~ s(x, k = 50),
-              method.args = list(family = mgcv::betar()),
+  ggplot(dist_agg, aes(distance, raneff_diff)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10),
               color = viridis(1, begin = 0.4),
-              fill = viridis(1, begin = 0.4)) +
-  scale_y_continuous(expand = c(0.01, 0.01), limits = c(0, 1)) +
+              fill = viridis(1, begin = 0.4),
+              linewidth = 0.7,
+              n = 150) +
+  scale_y_continuous(expand = c(0.01, 0.01),
+                     limits = c(0, max(dist_agg$raneff_diff) * 1.1)) +
   xlab("Distance (km)") +
-  ylab("Residuals difference") +
+  ylab("Random effects difference between plots") +
   theme(axis.text = element_text(size = 8),
         axis.title = element_text(size = 10),
         plot.title = element_text(hjust = 0),
-        panel.grid.minor = element_blank()) +
-  ggtitle("F")
+        panel.grid.minor = element_blank())
+res_spat
 
-
-res_surv <- egg::ggarrange(res_elev, res_pforest, res_height,
-                           res_manag, res_fire, res_spat,
-                           ncol = 3)
-ggsave("figures/dieback_residuals.png", plot = res_surv,
-       width = 17, height = 11, units = "cm")
-
-# Fire ~ management -------------------------------------------------------
-
-# management affects survival mostly mediated by fire, which is more frequent
-# under livestock exclusion.
-# Here we fit a model of fire probability at the plot level as a function of
-# management, to estimate fire probabilities and include their uncertainty later,
-# when the fire-weighted-average of predictions will be computed.
-
-# S <- as.numeric(table(dplot$manag))
-# y <- as.numeric(table(dplot$manag[dplot$fire == "Burned plots"]))
-#
-# fire_data <- list(N = length(y), S = S, y = y)
-# fire_model <- stan_model("fire.stan", verbose = T)
-#
-# f1 <- sampling(fire_model, data = fire_data,
-#                cores = 6, chains = 6, iter = 2000, warmup = 1000)
-#
-# pfire <- as.matrix(f1, "p")
-# colnames(pfire) <- levels(dplot$manag)
-# saveRDS(pfire, file.path("files", "fire_prob_samples.rds"))
-pfire <- readRDS(file.path("files", "fire_prob_samples.rds"))
+ggsave("figures/dieback_residuals_02.png", plot = res_spat,
+       width = 11, height = 10, units = "cm")
 
 # Predictions dieback ~ predictors ----------------------------------------
 
@@ -513,7 +525,7 @@ pdata <- rbind(
     elev_z = 0,
     pforest_z = seq(min(dtree$pforest_z), max(dtree$pforest_z), length.out = 150),
     height_z = 0,
-    varying_var = "Forest cover (%)"
+    varying_var = "Tree cover (%)"
   ),
   # height
   expand.grid(
@@ -533,7 +545,7 @@ rows_replace <- pdata$varying_var == "Elevation (m a.s.l.)"
 pdata$varying_val[rows_replace] <-
   pdata$elev_z[rows_replace] * pred_sds["elev"] + pred_means["elev"]
 
-rows_replace <- pdata$varying_var == "Forest cover (%)"
+rows_replace <- pdata$varying_var == "Tree cover (%)"
 pdata$varying_val[rows_replace] <-
   pdata$pforest_z[rows_replace] * pred_sds["pforest"] + pred_means["pforest"]
 
@@ -543,7 +555,7 @@ pdata$varying_val[rows_replace] <-
 
 pdata$manag_fire <- factor(
   paste(pdata$manag, pdata$fire, sep = "_"),
-  levels = levels(dtree$manag_fire)
+  levels = levels_managfire
 )
 
 Xpred <- model.matrix(fixed_formula, pdata)
@@ -576,14 +588,17 @@ for(j in 1:npost) {
 # summarize posterior
 psumm <- apply(phat, 1, mean_ci) %>% t %>% as.data.frame
 predictions <- cbind(pdata, psumm * 100)
-saveRDS(predictions, "files/dieback_predictions.rds")
 
-vv <- unique(pdata$varying_var)
-vv_names <- paste(c("(1)", "(2)", "(3)"), unique(pdata$varying_var))
 predictions$managlet <- factor(predictions$manag,
                                levels = levels(predictions$manag),
-                               labels = c("A. Rangeland",
-                                          "B. Livestock exclusion"))
+                               labels = c("A. Ranching",
+                                          "B. Conservation"))
+
+saveRDS(predictions, "files/dieback_predictions.rds")
+predictions <- readRDS("files/dieback_predictions.rds")
+
+vv <- unique(pdata$varying_var)
+vv_names <- unique(pdata$varying_var)
 
 plist <- vector("list", 3)
 
@@ -606,8 +621,8 @@ for(i in 1:3) {
   dd <- average(dtree, response = "dieback", var = vars[i], O = 15)
   dd$managlet <- factor(dd$manag,
                         levels = levels(dd$manag),
-                        labels = c("A. Rangeland",
-                                   "B. Livestock exclusion"))
+                        labels = c("A. Ranching",
+                                   "B. Conservation"))
   dlist[[i]] <- dd
 }
 lapply(dlist, function(x) table(x$manag, x$fire))
@@ -668,6 +683,8 @@ ggsave("figures/dieback_predictions.png", plot = die_plot,
 
 # Predictions growth ~ management --------------------------------------
 
+pfire <- readRDS(file.path("files", "fire_prob_samples.rds"))
+
 # average the management predictions with respect to fire, but considering that
 # fire varies between management levels.
 pdata_manag <- expand.grid(
@@ -680,7 +697,7 @@ pdata_manag <- expand.grid(
 
 pdata_manag$manag_fire <- factor(
   paste(pdata_manag$manag, pdata_manag$fire, sep = "_"),
-  levels = levels(dtree$manag_fire)
+  levels = levels_managfire
 )
 
 Xpred_manag <- model.matrix(fixed_formula, pdata_manag)
@@ -719,13 +736,13 @@ means_manag_hat <- as.matrix(means_manag[, -1])
 means_manag_summ <- apply(means_manag_hat, 1, mean_ci) %>% t
 
 diffmeans <- means_manag_hat[2, ] - means_manag_hat[1, ]
-probb <- sum(means_manag_hat[2, ] < means_manag_hat[1, ]) / ncol(means_manag_hat)
-# prob(exclusion < rangeland) = 0.7376667
+(probb <- sum(means_manag_hat[2, ] < means_manag_hat[1, ]) /
+    ncol(means_manag_hat))
+# prob(exclusion < rangeland) = 0.2091667
 
 # save table
 eeexp <- rbind(means_manag_summ, mean_ci(diffmeans),
                matrix(c(probb, NA, NA), 1))
 rownames(eeexp)[3:4] <- c("diff", "prob")
 
-write.csv(eeexp, file.path("files", "table_summary_dieback_manag_marginal.csv"))
-
+write.csv(eeexp, file.path("files", "table_summary_dieback_manag_marginal.csv")

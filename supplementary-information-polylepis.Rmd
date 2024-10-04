@@ -1,32 +1,33 @@
 ---
-title: |
-  <center> Polylepis survival, growth and dieback </center>
-  <center> Supplementary Information </center>
-subtitle: "Models specification"
-output: pdf_document
-header-includes:
-   - \usepackage{caption}
+title: "Tree survival and growth in central Argentina's highlands: impact of wildfires and land management"
+subtitle: "Supplementary Information"
+author: Daniel Renison, Iván Barberá, Ana M. Cingolani, Juan Manuel Rodriguez, and Isabell Hensen
+output:
+  pdf_document: default
+header-includes: 
+  \usepackage{caption}
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-
+# 1. Models specification and assessment 
+  
 ## Fire
 
-We modelled the probability of plots being affected by fire in the study period with a GLM, including the management factor as the only predictor:
+We modeled the probability of plots being affected by fire in the study period with a GLM, including the management factor as the only predictor:
 
 $$
 \begin{aligned}
 \text{y}_j \sim \ &\text{Bernoulli}(\text{p}_j) \\
 \\
-\text{logit}(\text{p}_j) = \ &\beta_1 \ \text{rangeland}_j  \ +\\ 
-&\beta_2 \ \text{exclusion}_{j} \\
+\text{logit}(\text{p}_j) = \ &\beta_1 \ \text{ranching}_j  \ +\\ 
+&\beta_2 \ \text{conservation}_{j} \\
 \\
 \beta_{1:2} \sim \ &\text{Normal}(0, 10). \\
 \end{aligned}
 $$
-$\text{y}_j \in \{0, 1\}$ is the response variable, indicating whether the $j^{th}$ plot, with $j \in \{1, ..., 139\}$, was affected by fire or not. rangeland and exclusion are mutually exclusive binary variables, indicating the management condition for each plot (exclusion refers to livestock exclusion). The Normal distribution is parameterised by mean and standard deviation.  
+$\text{y}_j \in \{0, 1\}$ is the response variable, indicating whether the $j^{th}$ plot, with $j \in \{1, ..., 139\}$, was affected by fire or not. "ranching" and "conservation" are mutually exclusive binary variables, indicating the management condition for each plot. The Normal distribution is parameterized by mean and standard deviation.  
 In all models we defined weakly informative priors based on simulations.
   
 ## Survival
@@ -37,10 +38,10 @@ $$
 \text{y}_i \sim \ &\text{Bernoulli}(\text{p}_i^{15}) \\
 \\
 \text{logit}(\text{p}_i) = \ &\beta_0 \ + \\
-&\beta_1 \ \text{exclusion}_{j[i]}  \ +\\ 
+&\beta_1 \ \text{conservation}_{j[i]}  \ +\\ 
 &\beta_2 \ \text{burned}_{j[i]} \ + \\ 
 &\beta_3 \ \text{elevation}_{j[i]} \ + \\
-&\beta_4 \ \text{forest}_{j[i]} \ + \\
+&\beta_4 \ \text{treecover}_{j[i]} \ + \\
 &\beta_5 \ \text{height}_i \ + \\ 
 &\varepsilon_{j[i]} \\
 \\
@@ -50,9 +51,9 @@ $$
 \sigma \sim \ &\text{Normal}(0, 3)\ \text{T}(0, \infty). \\
 \end{aligned}
 $$
-$\text{y}_i \in \{0, 1\}$ is the response variable, indicating whether $i^{th}$ tree, with $i \in \{1, ..., 880\}$, survived or not throughout the study period, with $\text{p}_i$ as its corresponding annual survival probability. The probability of surviving 15 years is $\text{p}_i^{15}$. Plots are indexed by $j \in \{1, ..., 139\}$, and $j[i]$ subsets the plot-level variables corresponding to the $i^{th}$ observation. $\beta_0$ is the intercept, referring to management = rangeland, and fire = unburned; $\beta_1$ is the difference between the intercept and the level management = livestock exclusion, while $\beta_2$ is the difference with the level fire = burned. exclusion and burned are binary variables indicating whether the $i^{th}$ tree corresponds to plots with livestock exclusion and a burned plot, respectively. "forest" stands for forest cover. Continuous predictors were standardized before model fitting. $\varepsilon_j$ is the plot-level random effect over the intercept. T(,) indicates the lower and upper bouned for truncated distributions.
+$\text{y}_i \in \{0, 1\}$ is the response variable, indicating whether $i^{th}$ tree, with $i \in \{1, ..., 880\}$, survived or not throughout the study period, with $\text{p}_i$ as its corresponding annual survival probability. The probability of surviving 15 years is $\text{p}_i^{15}$. Plots are indexed by $j \in \{1, ..., 139\}$, and $j[i]$ subsets the plot-level variables corresponding to the $i^{th}$ observation. $\beta_0$ is the intercept, referring to management = ranching, and fire = unburned; $\beta_1$ is the difference between the intercept and the level management = livestock conservation, while $\beta_2$ is the difference with the level fire = burned. "conservation" and "burned" are binary variables indicating whether the $i^{th}$ tree corresponds to plots with livestock conservation and a burned plot, respectively. Continuous predictors were standardized before model fitting. $\varepsilon_j$ is the plot-level random effect over the intercept. T(,) indicates the lower and upper bounds for truncated distributions.
   
-We included data from trees for which survival was recorded but tags were not found. As these unidentified trees were more likely to be dead than identified trees, excluding them from the model would have biased the survival probability to higher values. But without the id of a tree we could not compute its survival probability, as it depends on the initial tree height. To solve this, the id of each unidentified tree was treated as an extra parameter to estimate. But an id can only belong to one tree, so it is necessary to treat the ids as sets, where each id cannot be repeated. As example, consider a plot where we recorded two tag-less trees, and after discounting the identified trees we have four ids left, with no assigned tree (the remaining two are lost, we did not find them, and do not know whether they lived or died). The unobserved quantity to estimate would be which of all the possible combinations of these four ids taken in sets of two is the correct one. For example, if available ids are {13, 14, 15, 16}, we should estimate whether our two unidentified trees belong to the id-combinations $c_1=$ {13, 14}, $c_2=$ {13, 15}, $c_3=$ {13, 16}, and so on. But discrete parameters are usually easier to estimate by integrating them out from the likelihood. So, in each plot ($j$) with unidentified trees we evaluated the joint likelihood of observing the set of unidentified trees ($L_{c,j}$) in each combination ($c$), and then, summed the likelihood across combinations ($C$):
+We included data from trees for which survival was recorded but tags were not found. As these unidentified trees were more likely to be dead than identified trees, excluding them from the model would have biased the survival probability to higher values. But without the id of a tree we could not compute its survival probability, as it depends on the initial tree height. To solve this, the id of each unidentified tree was treated as an extra parameter to estimate. But an id can only belong to one tree, so it is necessary to treat the ids as sets, where each id cannot be repeated. As example, consider a plot where we recorded two tag-less trees, and after discounting the identified trees we have four ids left, with no assigned tree (the remaining two are lost, we did not find them, and do not know whether they lived or died). The unobserved quantity to estimate would be which of all the possible combinations of these four ids taken in sets of two is the correct id. For example, if available ids are {13, 14, 15, 16}, we should estimate whether our two unidentified trees belong to the id-combinations $c_1=$ {13, 14}, $c_2=$ {13, 15}, $c_3=$ {13, 16}, and so on. But discrete parameters are usually easier to estimate by integrating them out from the likelihood. So, in each plot ($j$) with unidentified trees we evaluated the joint likelihood of observing the set of unidentified trees ($L_{c,j}$) in each combination ($c$), and then, summed the likelihood across combinations ($C$):
 $$
 \begin{aligned}
 L_{c,j} &= \prod_{i=a}^{i=b} \text{Bernoulli}(\text{y}_i \ | \ \text{p}_{i,c,j}^{15}) \\
@@ -61,63 +62,81 @@ L_j &= \sum_{c=1}^C L_{c,j}.
 $$
 Where $a$ and $b$ denote the first and last recorded but unidentified trees, belonging to the plot $j$. $\text{p}_{i,c,j}$ is the annual survival probability for the $i^{th}$ tree computed from the initial height defined by the id-combination set $c$. Bernoulli(y | p) stands for the Bernuolli probability mass function.
   
-We assessed model fit by computing randomized cumulative probability residuals (Dunn and Smyth 1996), using the DHARMa R package (Hartig 2022; Fig. S1).  
+We assessed model fit by computing randomized cumulative probability residuals (Dunn and Smyth 1996) using the DHARMa R package (Hartig 2022; Fig. S1 and S2).  
 \newpage
-![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/survival_residuals.png) 
-**Figure S1.** Residuals from the survival model, as a function of explanatory variables (A-E), and pairwise difference in residuals as a function of pairwise distance between plots (F). The curves show the prediction from a Beta Generalized Additive Model fitted to points. Under good model fit, these residuals show a Uniform distribution in [0, 1], with no patterns as a function of predictors. In (F), an increasing trend at short distances would suggest spatial correlation.  
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/survival_residuals_01.png) 
+**Figure S1.** Residuals from the survival model, as a function of explanatory variables. The curves show the prediction from a Beta Generalized Additive Model (GAM) fitted to points. Under good model fit, these residuals show a Uniform distribution in [0, 1], with no patterns as a function of predictors.
+
+\newpage
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/survival_residuals_02.png)
+
+**Figure S2.** Pairwise absolute difference between plot-level random effects from the survival model (based on posterior means) as a function of the pairwise distance between plots. Data points were averaged in groups of 100 pairs to improve visibility. The line and ribbon show a GAM fitted to points, using nine cubic spline basis functions besides the intercept (maximum likelihood estimate and 95 % confidence interval). An increasing trend at short distance and a plateau afterwards would suggest spatial correlation.
   
 ## Growth
 
 The annual growth model was defined as follows:
 $$
 \begin{aligned}
-\text{y}_i \sim \ &\text{Normal}(\mu_i, \tau_i) \\
+\text{y}_i \sim \ &\text{Student-t}(\mu_i, \tau_i, \nu) \\
 \\
 \mu_i = \ &\beta_0 \ + \\
-&\beta_1 \ \text{exclusion}_{j[i]}  \ +\\ 
+&\beta_1 \ \text{conservation}_{j[i]}  \ +\\ 
 &\beta_2 \ \text{burned}_{j[i]} \ + \\ 
-&\beta_3 \ \text{elevation}_{j[i]} \ + \\
-&\beta_4 \ \text{forest}_{j[i]} \ + \\
-&\beta_5 \ \text{forest}^2_{j[i]} \ + \\
-&\beta_6 \ \text{height}_i \ + \\ 
+&\beta_3 \ \text{conservation}_{j[i]} \ \text{unburned}_{j[i]}  \ +\\ 
+&\beta_4 \ \text{elevation}_{j[i]} \ + \\
+&\beta_5 \ \text{treecover}_{j[i]} \ + \\
+&\beta_6 \ \text{treecover}^2_{j[i]} \ + \\
+&\beta_7 \ \text{height}_i \ + \\ 
 &\varepsilon_{j[i]} \\
 \\
-\text{log}(\tau_i) = \ &\gamma_0 \ +\  \gamma_1 \ \text{height}_i \\
+\text{log}(\tau_i) = \ &\gamma_1 \ \text{ranching}_{j[i]} \ \text{unburned}_{j[i]}\ +\\
+&\gamma_2 \ \text{ranching}_{j[i]} \ \text{burned}_{j[i]}\ +\\
+&\gamma_3 \ \text{conservation}_{j[i]} \ \text{unburned}_{j[i]}\ +\\
+&\gamma_4 \ \text{conservation}_{j[i]} \ \text{burned}_{j[i]} +\\
+&\gamma_5 \ \text{height}_i \\
 \\
-\beta_{0:6} \sim \ &\text{Normal}(0, 100) \\
+\beta_{0:7} \sim \ &\text{Normal}(0, 100) \\
 \varepsilon_j \sim \ &\text{Normal}(0, \sigma) \\
 \sigma \sim \ &\text{Normal}(0, 100) \ \text{T}(0, \infty)\\
-\gamma_0 \ \sim \ &\text{Normal}(\text{log}(50), 1.5) \\
-\gamma_1 \ \sim \ &\text{Normal}(0, 2). \\
+\nu \sim \ &\text{Gamma}(2, 0.1)\\
+\gamma_{1:4} \ \sim \ &\text{Normal}(\text{log}(6.93), 1.5) \\
+\gamma_5 \ \sim \ &\text{Normal}(0, 2). \\
 \end{aligned}
 $$
-We allowed $\tau$ to vary with tree height because the residuals analyses suggested higher variance in larger trees. As we recorded growth only in the trees where we found the tag in 2018, $i$ runs from 1 to 662.
+Where $\nu$ represents the degrees of freedom of the Student-t distribution, and the Gamma distribution is parameterized with shape and rate (usually labeled $\alpha$ and $\beta$, respectively). We assumed a Student-t distribution because there were several extreme values that biased the estimation of the mean in the direction of the outliers. We allowed $\tau$ to vary with tree height because the residuals analyses suggested higher variance in larger trees, and we also included the combined effects of land management and fire occurrence to account for heterogeneous variance. As we recorded growth only in the trees where we found the tag in 2018, $i$ runs from 1 to 662.
+  
 \newpage
-![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/growth_residuals.png) 
-**Figure S2.** Residuals from the growth model. See caption of Fig. S1 for details.  
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/growth_residuals_01.png)  
+**Figure S3.** Residuals from the growth model, as a function of explanatory variables. The curves show the prediction from a Beta GAM fitted to points. Under good model fit, these residuals show a Uniform distribution in [0, 1], with no patterns as a function of predictors.
+
+\newpage
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/growth_residuals_02.png)
+  
+**Figure S4.** Pairwise absolute difference between plot-level random effects from the survival model (based on posterior means) as a function of the pairwise distance between plots. Data points were averaged in groups of 100 pairs to improve visibility. The line and ribbon show a GAM fitted to points, using nine cubic spline basis functions besides the intercept (maximum likelihood estimate and 95 % confidence interval). An increasing trend at short distance and a plateau afterwards would suggest spatial correlation.
+  
   
 ## Dieback
   
-Crown dieback, ranging from 0 to 99 %, was transformed to the $(0, 1)$ scale and initially modelled with a Beta distribution. However, residuals suggested that the fitted distribution was not as asymmetric as needed. We first tried to improve this by allowing the dispersion parameter to vary, but this extra complexity did not solve the problem. By transforming the scaled dieback values to the logit scale (replacing zeroes by a small value), we found that the marginal distribution of the data fitted well to a Skew-Normal, with a long tail towards high values (right-skew). Thus we modelled dieback at the logit scale, which implies a Logit-Skew-Normal distribution for the scaled dieback $\in (0, 1)$, with the location and scale as linear functions of predictors. However, if zeroes were converted to very small values (as the logit function is not defined at zero), they were extremely small at the logit scale, and the fitted Skew-Normal lose its skewness to accommodate them, again resulting in a bad fit. Hence, before logit-transforming the data, zeroes were replaced by 0.005 (0.5 % in the original scale, the smallest observed value above zero). In this way, the Skew-Normal fitted a positive skewness and achieved a good fit, even when all predictors were included. Despite the replacement of zeroes to a convenient value may look arbitrary, the proportion of zeroes in the dataset was low. A more principled approach would have been to fit a mixture model, with a Bernoulli component generating zeroes, and a Logit-Skew-Normal generating values above zero. But the results would have been very similar, and the Skew-Normal component would anyway have fitted a right-skewed distribution, due to the small proportion of zeroes. Hence, we decided abandon the endless journey of model refinement at this point. Finally, as the mean of the Logit-Skew-Normal is unknown, we computed it from 500 draws with every posterior sample of the parameters when making predictions.  
+Crown dieback, ranging from 0 to 99 %, was transformed to the $(0, 1)$ scale and initially modeled with a Beta distribution. However, residuals suggested that the fitted distribution was not as asymmetric as needed. We first tried to improve this by allowing the dispersion parameter to vary, but this extra complexity did not solve the problem. By transforming the scaled dieback values to the logit scale (replacing zeroes by a small value), we found that the marginal distribution of the data fitted well to a Skew-Normal, with a long tail towards high values (right-skew). Thus we modeled dieback at the logit scale, which implies a Logit-Skew-Normal distribution for the scaled dieback $\in (0, 1)$, with the location and scale as linear functions of predictors. However, if zeroes were converted to very small values (as the logit function is not defined at zero), they were extremely small at the logit scale, and the fitted Skew-Normal lose its skewness to accommodate them, again resulting in a bad fit. Hence, before logit-transforming the data, zeroes were replaced by 0.005 (0.5 % in the original scale, the smallest observed value above zero). In this way, the Skew-Normal fitted a positive skewness and achieved a good fit, even when all predictors were included. Despite the replacement of zeroes to a convenient value may look arbitrary, the proportion of zeroes in the dataset was low. A more principled approach would have been to fit a mixture model, with a Bernoulli component generating zeroes, and a Logit-Skew-Normal generating values above zero. But the results would have been very similar, and the Skew-Normal component would anyway have fitted a right-skewed distribution, due to the small proportion of zeroes. Hence, we decided abandon the endless journey of model refinement at this point. Finally, as the mean of the Logit-Skew-Normal is unknown, we computed it from 500 draws with every posterior sample of the parameters when making predictions.  
 The model was defined as follows:
 $$
 \begin{aligned}
 \text{logit}\left(\frac{\text{y}_i}{100} \right) \sim \ &\text{Skew-Normal}(\xi_i, \omega_i, \alpha) \\
 \\
 \xi_i = \ &\beta_0 \ + \\
-&\beta_1 \ \text{exclusion}_{j[i]}  \ +\\ 
+&\beta_1 \ \text{conservation}_{j[i]}  \ +\\ 
 &\beta_2 \ \text{burned}_{j[i]} \ + \\ 
-&\beta_3 \ \text{exclusion}_{j[i]} \ \text{unburned}_{j[i]}  \ +\\ 
+&\beta_3 \ \text{conservation}_{j[i]} \ \text{unburned}_{j[i]}  \ +\\ 
 &\beta_4 \ \text{elevation}_{j[i]} \ + \\
 &\beta_5 \ \text{elevation}^2_{j[i]} \ + \\
-&\beta_6 \ \text{forest}_{j[i]} \ + \\
+&\beta_6 \ \text{treecover}_{j[i]} \ + \\
 &\beta_7 \ \text{height}_i \ + \\ 
 &\varepsilon_{j[i]} \\
 \\
-\omega_i = \ &\gamma_1 \ \text{rangeland}_{j[i]} \ \text{unburned}_{j[i]}\ +\\
-&\gamma_2 \ \text{rangeland}_{j[i]} \ \text{burned}_{j[i]}\ +\\
-&\gamma_3 \ \text{exclusion}_{j[i]} \ \text{unburned}_{j[i]}\ +\\
-&\gamma_4 \ \text{exclusion}_{j[i]} \ \text{burned}_{j[i]} \\
+\omega_i = \ &\gamma_1 \ \text{ranching}_{j[i]} \ \text{unburned}_{j[i]}\ +\\
+&\gamma_2 \ \text{ranching}_{j[i]} \ \text{burned}_{j[i]}\ +\\
+&\gamma_3 \ \text{conservation}_{j[i]} \ \text{unburned}_{j[i]}\ +\\
+&\gamma_4 \ \text{conservation}_{j[i]} \ \text{burned}_{j[i]} \\
 \\
 \beta_{0:7} \sim \ &\text{Normal}(0, 10) \\
 \varepsilon_j \sim \ &\text{Normal}(0, \sigma) \\
@@ -128,11 +147,29 @@ $$
 $$
 Where $\text{y}$ is the crown dieback, previously replacing zeroes by 0.5 %. $\xi$ is the location parameter, $\omega$ is the dispersion parameter, and $\alpha$ is the slant parameter, which determines the skeness. $\alpha = 0$ defines a Normal distribution with $\mu = \xi$ and $\sigma = \omega$. In the model for $\omega$ we did not include and intercept, so priors could be defined at the $\omega$ scale, rather than at its log, which makes the interpretation harder considering that $\omega$ is already at the logit scale. As we recorded growth only in the trees where we found the tag in 2018, $i$ runs from 1 to 662.  
 \newpage
-![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/dieback_residuals.png) 
-**Figure S3.** Residuals from the dieback model. See caption of Fig. S1 for details.  
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/dieback_residuals_01.png)  
+**Figure S5.** Residuals from the dieback model, as a function of explanatory variables. The curves show the prediction from a Beta GAM fitted to points. Under good model fit, these residuals show a Uniform distribution in [0, 1], with no patterns as a function of predictors.
+
 \newpage
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/dieback_residuals_02.png)  
   
+**Figure S6.** Pairwise absolute difference between plot-level random effects from the survival model (based on posterior means) as a function of the pairwise distance between plots. Data points were averaged in groups of 100 pairs to improve visibility. The line and ribbon show a GAM fitted to points, using nine cubic spline basis functions besides the intercept (maximum likelihood estimate and 95 % confidence interval). An increasing trend at short distance and a plateau afterwards would suggest spatial correlation.
+\newpage
+
+# 2. Additional figures
   
+Partial predictions from the survival, growth and dieback models for elevation and tree height.  
+    
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/predictions_elev.png)  
+  
+**Figure S7.** Annual survival probability, annual net growth in height and dieback by land management and fire, as a function of elevation. Lines show the predicted mean for an average plot using the posterior mean, and ribbons show the 95 % equal-tailed credible intervals. Predictions were computed fixing tree cover and tree height at their means across plots (tree cover = 22.8 %; tree height = 385.5 cm). Points show the plot-level means averaged in groups of three plots (for survival proportions, these values were raised to the 1/15th power to approximate annual values).
+\newpage
+
+![](/home/ivan/Insync/Colaboraciones/Renison - Supervivencia tabaquillos/polylepis_survival/figures/predictions_height.png)  
+  
+**Figure S7.** Annual survival probability, annual net growth in height and dieback by land management and fire, as a function of tree height. Lines show the predicted mean for an average plot using the posterior mean, and ribbons show the 95 % equal-tailed credible intervals. Predictions were computed fixing tree cover and elevation at their means across plots (tree cover = 22.8 %; elevation = 1898 m a.s.l.). Points show the plot-level means averaged in groups of three plots (for survival proportions, these values were raised to the 1/15th power to approximate annual values).
+\newpage
+
 ## References
   
 * Dunn, P. K., & Smyth, G. K. (1996). Randomized quantile residuals. Journal of Computational and graphical statistics, 5(3), 236-244.  
